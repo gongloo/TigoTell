@@ -3,5 +3,6 @@
 .pio
 .version_no_increment
 .vscode
+.DS_Store
 platformio_upload.ini
 src/config.h
