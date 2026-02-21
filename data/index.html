@@ -1,0 +1,586 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>TigoTell Dashboard</title>
+  <style>
+    :root {
+      --primary: #6dad12;
+      --secondary: #3a6d00;
+      --bg: #1c1917;
+      --card-bg: rgba(41, 37, 36, 0.7);
+      --text: #fafaf9;
+      --text-muted: #a8a29e;
+      --success: var(--primary);
+      --danger: #f87171;
+      --accent: #b4eb82;
+      --warning: #eab308;
+      --stale-bg: #eab3081a;
+      --font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    }
+
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      font-family: var(--font-family);
+      background: var(--bg);
+      color: var(--text);
+      line-height: 1.6;
+      min-height: 100vh;
+      padding: 2rem;
+      background-image:
+        radial-gradient(100% 50% at 0% 0%, #65a30d26 0, transparent 50%),
+        radial-gradient(100% 50% at 100% 50%, #f5b34226 0, transparent 50%),
+        radial-gradient(100% 50% at 0% 100%, #65a30d26 0, transparent 50%)
+    }
+
+    .container {
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+
+    header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 2rem;
+      padding-bottom: 1rem;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    h1 {
+      font-size: 1.875rem;
+      font-weight: 700;
+      background: linear-gradient(to right, var(--primary), var(--secondary));
+      -webkit-background-clip: text;
+      background-clip: text;
+      -webkit-text-fill-color: transparent;
+    }
+
+    .status-badge {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.5rem 1rem;
+      background: rgba(255, 255, 255, 0.05);
+      border-radius: 9999px;
+      font-size: 0.875rem;
+      font-weight: 600;
+      transition: all 0.3s ease;
+    }
+
+    .status-badge.status-live {
+      background: rgba(34, 197, 94, 0.1);
+      color: var(--success);
+    }
+
+    .status-badge.status-stale {
+      background: var(--stale-bg);
+      color: var(--warning);
+    }
+
+    .status-badge.status-disconnected {
+      background: rgba(239, 68, 68, 0.1);
+      color: var(--danger);
+    }
+
+    .status-dot {
+      width: 8px;
+      height: 8px;
+      background: currentColor;
+      border-radius: 50%;
+    }
+
+    .status-dot.pulse {
+      animation: pulse 0.8s ease-out;
+    }
+
+    @keyframes pulse {
+      0% {
+        transform: scale(1);
+        opacity: 1;
+      }
+
+      50% {
+        transform: scale(1.5);
+        opacity: 0.5;
+      }
+
+      100% {
+        transform: scale(1);
+        opacity: 1;
+      }
+    }
+
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
+      gap: 1rem;
+      margin-bottom: 2rem;
+    }
+
+    .stat-card {
+      background: var(--card-bg);
+      backdrop-filter: blur(12px);
+      padding: 1.5rem;
+      border-radius: 1rem;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      transition: transform 0.2s;
+    }
+
+    .stat-card:hover {
+      transform: translateY(-4px);
+    }
+
+    .stat-label {
+      display: block;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+      margin-bottom: 0.5rem;
+    }
+
+    .stat-value {
+      font-size: 1.5rem;
+      font-weight: 700;
+    }
+
+    section {
+      margin-bottom: 3rem;
+    }
+
+    h2 {
+      font-size: 1.25rem;
+      margin-bottom: 1.5rem;
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    h2::before {
+      content: '';
+      display: block;
+      width: 4px;
+      height: 24px;
+      background: var(--primary);
+      border-radius: 2px;
+    }
+
+    .power-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+      gap: 1.5rem;
+    }
+
+    .power-card {
+      background: var(--card-bg);
+      backdrop-filter: blur(12px);
+      border-radius: 1rem;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .card-header {
+      padding: 1.25rem;
+      background: rgba(255, 255, 255, 0.05);
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .power-card .node-id {
+      color: var(--accent);
+    }
+
+    .power-card.stale {
+      border-color: var(--warning);
+    }
+
+    .stale-badge {
+      display: none;
+      font-weight: 600;
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      background: var(--stale-bg);
+      color: var(--warning);
+      padding: .25rem .5rem;
+      border-radius: .25rem;
+    }
+
+    .power-card.stale .stale-badge {
+      display: inline-block;
+    }
+
+    .power-card.stale .address {
+      margin-left: '0.5rem';
+    }
+
+    .card-body {
+      padding: 1.25rem;
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 1rem;
+    }
+
+    .metric {
+      display: flex;
+      flex-direction: column;
+    }
+
+    .metric-label {
+      font-size: 0.7rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+    }
+
+    .metric-value {
+      font-size: 1.125rem;
+      font-weight: 600;
+    }
+
+    .node-id {
+      font-weight: 700;
+    }
+
+    .barcode {
+      font-family: monospace;
+      color: var(--accent);
+    }
+
+    .address {
+      font-family: monospace;
+    }
+
+    .power-card .power {
+      color: var(--primary);
+    }
+
+    .power-card .address {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      margin-left: auto;
+    }
+
+    .power-card .address::before {
+      content: 'Addr: ';
+      font-family: var(--font-family);
+    }
+
+    .power-card .updated {
+      font-size: 0.75rem;
+      color: var(--text-muted);
+      grid-column: 1 / -1;
+      margin-top: 0.5rem;
+      display: none;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .power-card.stale .updated {
+      display: flex;
+    }
+
+    .power-card .updated .timestamp::before {
+      content: 'Updated: ';
+    }
+
+    .barcode-fragment {
+      font-family: monospace;
+    }
+
+    .last-seen {
+      font-size: 0.875rem;
+      color: var(--text-muted);
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: var(--card-bg);
+      backdrop-filter: blur(12px);
+      border-radius: 1rem;
+      overflow: hidden;
+      border: 1px solid rgba(255, 255, 255, 0.1);
+    }
+
+    th,
+    td {
+      text-align: left;
+      padding: 1rem 1.5rem;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+    }
+
+    th {
+      background: rgba(255, 255, 255, 0.05);
+      font-size: 0.75rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      color: var(--text-muted);
+    }
+
+    tr:last-child td {
+      border-bottom: none;
+    }
+
+    @media (max-width: 768px) {
+      body {
+        padding: 1rem;
+      }
+
+      header {
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 1rem;
+      }
+
+      .power-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+    <header>
+      <div>
+        <h1>TigoTell Dashboard</h1>
+        <p id="build-version" style="font-size: 0.75rem; color: var(--text-muted);">Loading...</p>
+      </div>
+      <div id="status-badge" class="status-badge status-live">
+        <div id="status-dot" class="status-dot"></div>
+        <span id="status-text">Loading...</span>
+      </div>
+    </header>
+
+    <section>
+      <div class="stats-grid">
+        <div class="stat-card">
+          <span class="stat-label">Total Frames</span>
+          <span class="stat-value" id="stat-total">-</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">Power Frames</span>
+          <span class="stat-value" id="stat-power">-</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">Announce Frames</span>
+          <span class="stat-value" id="stat-announce">-</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">Registry Frames</span>
+          <span class="stat-value" id="stat-nodetable">-</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">CRC Errors</span>
+          <span class="stat-value" id="stat-crc">-</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">PV Nodes</span>
+          <span class="stat-value" id="stat-nodes">-</span>
+        </div>
+        <div class="stat-card">
+          <span class="stat-label">Uptime</span>
+          <span class="stat-value" id="uptime">-</span>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <h2>Live Power Metrics</h2>
+      <div class="power-grid" id="power-grid">
+        <!-- Power cards will be injected here -->
+      </div>
+    </section>
+
+    <section>
+      <h2>Discovery Registry</h2>
+      <div style="overflow-x: auto;">
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Address</th>
+              <th>Barcode (Full)</th>
+              <th>Barcode (Short)</th>
+              <th>Last Seen</th>
+            </tr>
+          </thead>
+          <tbody id="discovery-table">
+            <!-- Discovery rows will be injected here -->
+          </tbody>
+        </table>
+      </div>
+    </section>
+  </div>
+
+  <script>
+    let serverUptimeMs = 0;
+    let lastUpdateLocalTime = Date.now();
+    let lastFetchTime = Date.now();
+
+    function updateStatus() {
+      const now = Date.now();
+      const statusBadge = document.getElementById('status-badge');
+      const statusText = document.getElementById('status-text');
+
+      // Only transition to 'Stale' if not currently 'Disconnected'
+      if (now - lastFetchTime > 15000 && !statusBadge.classList.contains('status-disconnected')) {
+        statusBadge.className = 'status-badge status-stale';
+        statusText.innerText = 'Stale';
+      }
+    }
+
+    function updateUptime() {
+      const diff = Math.floor((serverUptimeMs + (Date.now() - lastUpdateLocalTime)) / 1000);
+      const days = Math.floor(diff / 86400);
+      const hrs = Math.floor((diff % 86400) / 3600);
+      const mins = Math.floor((diff % 3600) / 60);
+      const secs = diff % 60;
+      document.getElementById('uptime').innerText =
+        `${days > 0 ? days + 'd ' : ''}${hrs.toString().padStart(2, '0')}:${mins.toString().padStart(2, '0')}:${secs.toString().padStart(2, '0')}`;
+    }
+
+    function formatAddress(address) {
+      return address.toString(16).toUpperCase().padStart(2, '0');
+    }
+
+    async function fetchData() {
+      try {
+        const response = await fetch('/json');
+        if (!response.ok) throw new Error('Network response was not ok');
+        const data = await response.json();
+
+        lastFetchTime = Date.now();
+        const statusBadge = document.getElementById('status-badge');
+        const statusText = document.getElementById('status-text');
+        const statusDot = document.getElementById('status-dot');
+
+        statusBadge.className = 'status-badge status-live';
+        statusText.innerText = 'Live';
+
+        // Trigger pulse animation
+        statusDot.classList.remove('pulse');
+        void statusDot.offsetWidth; // Force reflow
+        statusDot.classList.add('pulse');
+
+        if (data.uptime_ms) {
+          serverUptimeMs = data.uptime_ms;
+          lastUpdateLocalTime = Date.now();
+        }
+
+        // Update Platform Info
+        if (data.version) {
+          document.getElementById('build-version').innerText = `v${data.version}`;
+          if (data.build_timestamp) {
+            document.getElementById('build-version').title = `Build: ${data.build_timestamp}`;
+          }
+        }
+
+        // Update Stats
+        if (data.stats) {
+          document.getElementById('stat-total').innerText = data.stats.total_frames.toLocaleString();
+          document.getElementById('stat-power').innerText = data.stats.power_count.toLocaleString();
+          document.getElementById('stat-announce').innerText = data.stats.announce_count.toLocaleString();
+          document.getElementById('stat-nodetable').innerText = data.stats.nodetable_count.toLocaleString();
+          const crcStat = document.getElementById('stat-crc');
+          crcStat.innerText = data.stats.crc_errors.toLocaleString();
+          crcStat.style.color = data.stats.crc_errors > 0 ? 'var(--warning)' : '';
+        }
+
+        if (data.nodes && data.power) {
+          const found = Math.max(data.power.length, data.nodes.filter(n => n.barcode_fragment > 0).length);
+          const expected = data.nodes.filter(n => n.barcode && n.barcode.length > 0).length;
+          document.getElementById('stat-nodes').innerText = `${found}${expected > 0 ? '/' + expected : ''}`;
+        }
+
+        // Update Power Grid
+        const powerGrid = document.getElementById('power-grid');
+        powerGrid.innerHTML = data.power.map(p => {
+          const lastUpdated = p.last_updated ? p.last_updated : 0;
+          const ageSeconds = (data.uptime_ms - lastUpdated) / 1000;
+          const isStale = ageSeconds > 60; // Stale if older than 60s
+
+          // Calculate actual time of last update
+          const updateTime = new Date(Date.now() - (ageSeconds * 1000));
+          const timeString = updateTime.toLocaleTimeString();
+
+          return `
+                    <div class="power-card ${isStale ? 'stale' : ''}">
+                        <div class="card-header">
+                            <span class="node-id">${p.pv_node_id}</span>
+                            <span class="address">${formatAddress(p.address)}</span>
+                        </div>
+                        <div class="card-body">
+                            <div class="metric">
+                                <span class="metric-label">Power</span>
+                                <span class="metric-value power">${(p.voltage_out * p.current_in).toFixed(1)}W</span>
+                            </div>
+                            <div class="metric">
+                                <span class="metric-label">RSSI</span>
+                                <span class="metric-value">${p.rssi} dBm</span>
+                            </div>
+                            <div class="metric">
+                                <span class="metric-label">V In</span>
+                                <span class="metric-value">${p.voltage_in.toFixed(1)}V</span>
+                            </div>
+                            <div class="metric">
+                                <span class="metric-label">V Out</span>
+                                <span class="metric-value">${p.voltage_out.toFixed(1)}V</span>
+                            </div>
+                            <div class="metric">
+                                <span class="metric-label">Current</span>
+                                <span class="metric-value">${p.current_in.toFixed(2)}A</span>
+                            </div>
+                            <div class="metric">
+                                <span class="metric-label">Temp</span>
+                                <span class="metric-value">${p.temperature.toFixed(1)}°C</span>
+                            </div>
+                            <div class="updated">
+                                <span class="stale-badge">Stale</span>
+                                <span class="timestamp">${timeString}</span>
+                            </div>
+                        </div>
+                    </div>
+                `
+        }).join('');
+
+        // Update Discovery Table
+        const discoveryTable = document.getElementById('discovery-table');
+        discoveryTable.innerHTML = data.nodes.map(n => `
+                    <tr>
+                        <td class="node_id">${n.pv_node_id}</td>
+                        <td class="address">${n.address > 0 ? formatAddress(n.address) : '-'}</td>
+                        <td class="barcode">${n.barcode || '-'}</td>
+                        <td class="barcode-fragment">${n.barcode_fragment > 0 ? n.barcode_fragment.toString(16).toUpperCase().padStart(6, 0) : '-'}</td>
+                        <td class="last-seen">${n.last_seen_ms > 0 ? new Date(Date.now() - (data.uptime_ms - n.last_seen_ms)).toLocaleTimeString() : '-'}</td>
+                    </tr>
+                `).join('');
+
+      } catch (error) {
+        console.error('Error fetching data:', error);
+        const statusBadge = document.getElementById('status-badge');
+        const statusText = document.getElementById('status-text');
+        statusBadge.className = 'status-badge status-disconnected';
+        statusText.innerText = 'Disconnected';
+      }
+    }
+
+    setInterval(fetchData, 5000);
+    setInterval(updateUptime, 1000);
+    setInterval(updateStatus, 1000);
+    fetchData();
+  </script>
+</body>
+
+</html>

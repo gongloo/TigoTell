@@ -1,0 +1,7 @@
+.cache
+.clangd
+.pio
+.version_no_increment
+.vscode
+platformio_upload.ini
+src/config.h
