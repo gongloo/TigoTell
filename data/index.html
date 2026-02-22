@@ -366,6 +366,10 @@
     <section>
       <div class="stats-grid">
         <div class="stat-card">
+          <span class="stat-label">Total Power</span>
+          <span class="stat-value" id="stat-wattage">-</span>
+        </div>
+        <div class="stat-card">
           <span class="stat-label">Total Frames</span>
           <span class="stat-value" id="stat-total">-</span>
         </div>
@@ -506,10 +510,16 @@
 
         // Update Power Grid
         const powerGrid = document.getElementById('power-grid');
+        let totalWattage = 0;
         powerGrid.innerHTML = data.power.map(p => {
           const lastUpdated = p.last_updated ? p.last_updated : 0;
           const ageSeconds = (data.uptime_ms - lastUpdated) / 1000;
           const isStale = ageSeconds > 60; // Stale if older than 60s
+          const watts = p.voltage_out * p.current_in;
+
+          if (!isStale) {
+            totalWattage += watts;
+          }
 
           // Calculate actual time of last update
           const updateTime = new Date(Date.now() - (ageSeconds * 1000));
@@ -524,7 +534,7 @@
                         <div class="card-body">
                             <div class="metric">
                                 <span class="metric-label">Power</span>
-                                <span class="metric-value power">${(p.voltage_out * p.current_in).toFixed(1)}W</span>
+                                <span class="metric-value power">${(p.voltage_out * p.current_in).toFixed(1)} W</span>
                             </div>
                             <div class="metric">
                                 <span class="metric-label">RSSI</span>
@@ -554,6 +564,8 @@
                     </div>
                 `
         }).join('');
+
+        document.getElementById('stat-wattage').innerText = `${totalWattage.toLocaleString(undefined, { maximumFractionDigits: 0 })} W`;
 
         // Update Discovery Table
         const discoveryTable = document.getElementById('discovery-table');
