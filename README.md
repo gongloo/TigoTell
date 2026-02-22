@@ -1,6 +1,7 @@
 # TigoTell
 
-*Tigo CCA/TAP sniffer built atop Waveshare ESP32-S3-RS485-CAN.*
+**Tigo CCA/TAP sniffer built atop Waveshare ESP32-S3-RS485-CAN.**
+
 Non-intrusively monitors communication between Tigo Cloud Connect Advanced (CCA) and Tigo Access Point (TAP) or solar modules to extract real-time telemetry data.
 
 ## 📸 Overview
@@ -9,22 +10,33 @@ Non-intrusively monitors communication between Tigo Cloud Connect Advanced (CCA)
 **TigoTell** passively listens to the RS485 communication lines of your Tigo solar installation. By sniffing the packets exchanged between the CCA and the TAP, it decodes module-level power statistics, discovering nodes automatically without interfering with the proprietary network. This allows you to log fine-grained solar data into databases like InfluxDB while the official hardware remains unaware.
 
 ## ✨ Features
-- **Passive Sniffing:** Safe, receive-only RS485 monitoring without disrupting existing communications.
-- **Data Parsing:** Decodes Tigo `PowerData`, `Announce`, and `NodeTable` frames (Voltage, Current, Temperature, Duty Cycle, RSSI, etc.).
-- **InfluxDB Integration:** Streams parsed telemetry directly to an InfluxDB instance over UDP line-protocol.
-- **REST APIs:** Live JSON endpoints for power data, system discovery statistics, and parser health (`/json` and `/version`).
-- **WebSerial Debugging:** Built-in web-based serial console.
-- **OTA Updates:** Fast and secure Over-The-Air firmware updates using ElegantOTA.
-- **WiFi Management:** AP-based initial setup for seamless network provisioning utilizing NetWizard.
+- **Passive Sniffing**  
+  Safe, receive-only RS485 monitoring without disrupting existing communications.
+- **Data Parsing**  
+  Decodes Tigo `PowerData`, `Announce`, and `NodeTable` frames (Voltage, Current, Temperature, Duty Cycle, RSSI, etc.).
+- **InfluxDB Integration**  
+  Streams parsed telemetry directly to an InfluxDB instance over UDP line-protocol.
+- **REST APIs**  
+  Live JSON endpoints for power data, system discovery statistics, and parser health (`/json` and `/version`).
+- **WebSerial Debugging**  
+  Built-in web-based serial console.
+- **OTA Updates**  
+  Fast and secure Over-The-Air firmware updates using ElegantOTA.
+- **WiFi Management**  
+  AP-based initial setup for seamless network provisioning utilizing NetWizard.
 
 ## 📋 Requirements
 ### Hardware
-- **Base Board**: Waveshare ESP32-S3-RS485-CAN (or a comparable ESP32-S3 board with an RS485 transceiver).
-- **Wiring**: Connection to the RS485 A and B lines between the Tigo CCA and TAP. 
+- **Base Board**  
+  Waveshare ESP32-S3-RS485-CAN (or a comparable ESP32-S3 board with an RS485 transceiver).
+- **Communications Wiring**  
+  Connection to the RS485 A and B lines between the Tigo CCA and TAP.
+- **Power**  
+  Can usually be run off the same power supply as the Tigo CCA.
 
 ### Software / Dependencies
 - [pioarduino](https://github.com/pioarduino/platform-espressif32) Core (CLI) or VSCode IDE extension.
-- *(Optional)* An **InfluxDB** instance (configured to receive UDP datagrams) if you wish to record time-series metrics.
+- *(Optional)* An **InfluxDB** and/or **Telegraf** instance (configured to receive UDP datagrams) if you wish to record time-series metrics.
 
 ## 🚀 Getting Started
 
@@ -49,9 +61,12 @@ Use pioarduino to compile the firmware and flash it via USB:
 ```bash
 pio run -e esp32-s3-devkitm-1 -t upload
 ```
-*Important Note for First Upload: For the initial flash over USB, Over-The-Air (OTA) updates will not be available yet. You must comment out the `upload_protocol = custom` line in `platformio.ini` to force a USB upload instead of attempting an OTA update. You can uncomment it again for future OTA flashes.*
 
-*Note: Make sure to also run the `uploadfs` target if LittleFS requires a fresh image, although normal firmware updates bundle necessary files.*
+> [!IMPORTANT]
+> For the initial flash over USB, Over-The-Air (OTA) updates will not be available yet. **You must comment out the `upload_protocol = custom` line in `platformio.ini`** to force a USB upload instead of attempting an OTA update. You can uncomment it again for future OTA flashes.
+
+> [!NOTE]
+> Make sure to also run the `uploadfs` target if LittleFS requires a fresh image, although normal firmware updates bundle necessary files.*
 
 ### 3. Network Provisioning
 1. Once flashed, the ESP32 will broadcast a WiFi Access Point named `TigoTell`.
