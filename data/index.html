@@ -567,7 +567,7 @@
                     <tr>
                         <td class="node_id">${n.pv_node_id}</td>
                         <td class="address">${n.address > 0 ? formatAddress(n.address) : '-'}</td>
-                        <td class="barcode">${n.barcode || n.barcode_fragment > 0 ? n.barcode_fragment.toString(16).toUpperCase().padStart(6, 0).padStart(16, '?') : '-'}</td>
+                        <td class="barcode">${n.barcode ? n.barcode : (n.barcode_fragment && n.barcode_fragment > 0 ? n.barcode_fragment.toString(16).toUpperCase().padStart(6, '0').padStart(16, '?') : '-')}</td>
                         <td class="last-seen">${n.last_seen_ms > 0 ? new Date(Date.now() - (data.uptime_ms - n.last_seen_ms)).toLocaleTimeString() : '-'}</td>
                     </tr >
                 `).join('');
