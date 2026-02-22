@@ -128,18 +128,41 @@
     .stat-card {
       background: var(--card-bg);
       backdrop-filter: blur(12px);
-      padding: 1.5rem;
+      padding: 1.25rem 1.5rem;
       border-radius: 1rem;
       border: 1px solid rgba(255, 255, 255, 0.1);
+      display: flex;
+      flex-direction: column;
+    }
+
+    .stat-card-header {
+      display: flex;
+      align-items: center;
+      margin-bottom: 0.5rem;
     }
 
     .stat-label {
-      display: block;
+      display: flex;
+      align-items: center;
+      white-space: nowrap;
+      gap: 0.5rem;
       font-size: 0.75rem;
       text-transform: uppercase;
       letter-spacing: 0.05em;
       color: var(--text-muted);
-      margin-bottom: 0.5rem;
+    }
+
+    .stat-label::before {
+      content: '';
+      display: block;
+      width: 1.2rem;
+      height: 1.2rem;
+      background-image: var(--card-icon);
+      background-size: contain;
+      background-repeat: no-repeat;
+      background-position: center;
+      filter: invert(1) brightness(1.5);
+      opacity: 0.6;
     }
 
     .stat-value {
@@ -360,36 +383,52 @@
 
     <section>
       <div class="stats-grid">
-        <div class="stat-card">
-          <span class="stat-label">Total Power</span>
+        <div class="stat-card" style="--card-icon: url('images/material-design/solar-power.svg');">
+          <div class="stat-card-header">
+            <span class="stat-label">Current Power</span>
+          </div>
           <span class="stat-value" id="stat-wattage">-</span>
         </div>
-        <div class="stat-card">
-          <span class="stat-label">Total Frames</span>
+        <div class="stat-card" style="--card-icon: url('images/material-design/swap-vertical-circle.svg');">
+          <div class="stat-card-header">
+            <span class="stat-label">Total Frames</span>
+          </div>
           <span class="stat-value" id="stat-total">-</span>
         </div>
-        <div class="stat-card">
-          <span class="stat-label">Power Frames</span>
+        <div class="stat-card" style="--card-icon: url('images/material-design/lightning-bolt-circle.svg');">
+          <div class="stat-card-header">
+            <span class="stat-label">Power Frames</span>
+          </div>
           <span class="stat-value" id="stat-power">-</span>
         </div>
-        <div class="stat-card">
-          <span class="stat-label">Announce Frames</span>
+        <div class="stat-card" style="--card-icon: url('images/material-design/contactless-payment-circle.svg');">
+          <div class="stat-card-header">
+            <span class="stat-label">Announce Frames</span>
+          </div>
           <span class="stat-value" id="stat-announce">-</span>
         </div>
-        <div class="stat-card">
-          <span class="stat-label">Registry Frames</span>
+        <div class="stat-card" style="--card-icon: url('images/material-design/dots-vertical-circle.svg');">
+          <div class="stat-card-header">
+            <span class="stat-label">Registry Frames</span>
+          </div>
           <span class="stat-value" id="stat-nodetable">-</span>
         </div>
-        <div class="stat-card">
-          <span class="stat-label">CRC Errors</span>
+        <div class="stat-card" style="--card-icon: url('images/material-design/alert-circle.svg');">
+          <div class="stat-card-header">
+            <span class="stat-label">CRC Errors</span>
+          </div>
           <span class="stat-value" id="stat-crc">-</span>
         </div>
-        <div class="stat-card">
-          <span class="stat-label">PV Nodes</span>
+        <div class="stat-card" style="--card-icon: url('images/material-design/solar-panel.svg');">
+          <div class="stat-card-header">
+            <span class="stat-label">PV Nodes</span>
+          </div>
           <span class="stat-value" id="stat-nodes">-</span>
         </div>
-        <div class="stat-card">
-          <span class="stat-label">Uptime</span>
+        <div class="stat-card" style="--card-icon: url('images/material-design/clock.svg');">
+          <div class="stat-card-header">
+            <span class="stat-label">Uptime</span>
+          </div>
           <span class="stat-value" id="uptime">-</span>
         </div>
       </div>

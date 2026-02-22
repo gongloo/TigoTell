@@ -87,3 +87,4 @@ This project stands on the shoulders of the incredible reverse-engineering work 
 - **[willglynn/taptap](https://github.com/willglynn/taptap)**: Excellent documentation and implementation of the Tigo wireless protocol.
 - **[tictactom/tigo_server](https://github.com/tictactom/tigo_server)**: Fundamental research and parsing logic for the Tigo CCA/TAP communications.
 - **Google Gemini**: For AI pair-programming assistance in building and structuring this project!
+- **[Google Material Design Icons](https://fonts.google.com/icons)**: Used for the web dashboard visualization (licensed under the Apache License 2.0).
