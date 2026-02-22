@@ -5,7 +5,7 @@
 Non-intrusively monitors communication between Tigo Cloud Connect Advanced (CCA) and Tigo Access Point (TAP) or solar modules to extract real-time telemetry data.
 
 ## 📸 Overview
-<!--TODO: [TigoTell Screenshot](screenshot.png) -->
+![TigoTell Screenshot](screenshot.jpg)
 
 **TigoTell** passively listens to the RS485 communication lines of your Tigo solar installation. By sniffing the packets exchanged between the CCA and the TAP, it decodes module-level power statistics, discovering nodes automatically without interfering with the proprietary network. This allows you to log fine-grained solar data into databases like InfluxDB while the official hardware remains unaware.
 
