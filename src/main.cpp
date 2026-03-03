@@ -8,10 +8,12 @@
 #include <WebSerial.h>
 #include <WiFiUdp.h>
 
+#include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
 
+#include "PowerStatsAccumulator.h"
 #include "TigoProtocol.h"
 #include "Version.h"
 #include "config.h"
@@ -51,6 +53,8 @@ std::map<uint16_t, unsigned long> lastUpdateTimes;
 std::map<uint16_t, unsigned long> lastUpdateTimesAnnounce;
 
 std::mutex dataMutex;
+
+std::map<uint16_t, PowerStatsAccumulator> nodeAccumulators;
 
 void setup() {
   Serial.begin(115200);
@@ -190,6 +194,10 @@ void loop() {
       TigoPowerFrame *powerFrame = static_cast<TigoPowerFrame *>(frame.get());
       if (powerFrame) {
         unsigned long currentTime = millis();
+
+        // Add frame to accumulator
+        nodeAccumulators[powerFrame->pv_node_id].add(powerFrame);
+
         bool shouldSend = false;
         if (lastUpdateTimes.find(powerFrame->pv_node_id) ==
             lastUpdateTimes.end()) {
@@ -202,19 +210,24 @@ void loop() {
         }
 
         if (shouldSend && WiFi.status() == WL_CONNECTED) {
-          std::string lineProtocol =
-              powerFrame->toInfluxLineProtocol(MEASUREMENT_NAME);
+          if (nodeAccumulators[powerFrame->pv_node_id].hasSamples()) {
+            std::string lineProtocol =
+                nodeAccumulators[powerFrame->pv_node_id].toInfluxLineProtocol(
+                    MEASUREMENT_NAME, powerFrame->address,
+                    powerFrame->pv_node_id);
 
-          // Send over UDP
-          udp.beginPacket(kInfluxHost, kInfluxPort);
-          udp.print(lineProtocol.c_str());
-          udp.endPacket();
+            // Send over UDP
+            udp.beginPacket(kInfluxHost, kInfluxPort);
+            udp.print(lineProtocol.c_str());
+            udp.endPacket();
 
-          // Debug output
-          WebSerial.print("Sent: ");
-          WebSerial.println(lineProtocol.c_str());
+            // Debug output
+            WebSerial.print("Sent: ");
+            WebSerial.println(lineProtocol.c_str());
+          }
 
           lastUpdateTimes[powerFrame->pv_node_id] = currentTime;
+          nodeAccumulators[powerFrame->pv_node_id].reset();
         }
 
         // Store the latest power frame for JSON endpoint
