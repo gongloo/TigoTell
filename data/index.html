@@ -279,10 +279,6 @@
       font-family: monospace;
     }
 
-    .power-card .power {
-      color: var(--primary);
-    }
-
     .power-card .address {
       font-size: 0.75rem;
       color: var(--text-muted);
@@ -567,7 +563,7 @@
                         <div class="card-body">
                             <div class="metric">
                                 <span class="metric-label">Power</span>
-                                <span class="metric-value power">${(p.voltage_out * p.current_in).toFixed(1)} W</span>
+                                <span class="metric-value power" ${watts > 0 ? 'style="color: var(--primary);"' : ''}>${watts.toFixed(1)} W</span>
                             </div>
                             <div class="metric">
                                 <span class="metric-label">RSSI</span>
@@ -598,7 +594,10 @@
                 `
         }).join('');
 
-        document.getElementById('stat-wattage').innerText = `${totalWattage.toLocaleString([], { maximumFractionDigits: 0 })} W`;
+        // Update total wattage.
+        const wattage = document.getElementById('stat-wattage');
+        wattage.innerText = `${totalWattage.toLocaleString([], { maximumFractionDigits: 0 })} W`;
+        wattage.style.color = totalWattage > 0 ? 'var(--primary)' : '';
 
         // Update Discovery Table
         const discoveryTable = document.getElementById('discovery-table');
