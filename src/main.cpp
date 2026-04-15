@@ -16,7 +16,7 @@
 #include "PowerStatsAccumulator.h"
 #include "TigoProtocol.h"
 #include "Version.h"
-#include "config.h"
+#include <Preferences.h>
 #include <esp_wifi.h>
 
 // Increase to help prevent overflow (CRC errors result).
@@ -25,12 +25,66 @@ constexpr size_t kRxBufferSize = 1024;
 AsyncUDP udp;
 TigoParser parser;
 
+struct Config {
+  String hostname = "TigoTell";
+  int txPin = 17;
+  int rxPin = 18;
+  int enPin = 21;
+  String influxHost = "";
+  uint16_t influxPort = 0;
+  int pushStatsInterval = 60;
+  String measurementName = "tigotell_v0";
+  int minSecondsNodeUpdates = 10;
+  int minSecondsNodeTableUpdates = 60;
+};
+
+Config appConfig;
+Preferences preferences;
+
+void loadSettings() {
+  preferences.begin("tigotell", true);
+  appConfig.hostname = preferences.getString("hostname", appConfig.hostname);
+  appConfig.txPin = preferences.getInt("txPin", appConfig.txPin);
+  appConfig.rxPin = preferences.getInt("rxPin", appConfig.rxPin);
+  appConfig.enPin = preferences.getInt("enPin", appConfig.enPin);
+  appConfig.influxHost =
+      preferences.getString("influxHost", appConfig.influxHost);
+  appConfig.influxPort =
+      preferences.getUShort("influxPort", appConfig.influxPort);
+  appConfig.pushStatsInterval =
+      preferences.getInt("pushStats", appConfig.pushStatsInterval);
+  appConfig.measurementName =
+      preferences.getString("measName", appConfig.measurementName);
+  appConfig.minSecondsNodeUpdates =
+      preferences.getInt("nodeUpd", appConfig.minSecondsNodeUpdates);
+  appConfig.minSecondsNodeTableUpdates =
+      preferences.getInt("tableUpd", appConfig.minSecondsNodeTableUpdates);
+  preferences.end();
+}
+
+void saveSettings() {
+  preferences.begin("tigotell", false);
+  preferences.putString("hostname", appConfig.hostname);
+  preferences.putInt("txPin", appConfig.txPin);
+  preferences.putInt("rxPin", appConfig.rxPin);
+  preferences.putInt("enPin", appConfig.enPin);
+  preferences.putString("influxHost", appConfig.influxHost);
+  preferences.putUShort("influxPort", appConfig.influxPort);
+  preferences.putInt("pushStats", appConfig.pushStatsInterval);
+  preferences.putString("measName", appConfig.measurementName);
+  preferences.putInt("nodeUpd", appConfig.minSecondsNodeUpdates);
+  preferences.putInt("tableUpd", appConfig.minSecondsNodeTableUpdates);
+  preferences.end();
+}
+
 void sendUdpPayload(const std::string &payload) {
-  if (payload.empty() || WiFi.status() != WL_CONNECTED) {
+  if (payload.empty() || WiFi.status() != WL_CONNECTED ||
+      appConfig.influxHost.length() == 0 || appConfig.influxPort == 0) {
     return;
   }
   udp.writeTo(reinterpret_cast<const uint8_t *>(payload.c_str()),
-              payload.length(), kInfluxHost, kInfluxPort);
+              payload.length(), appConfig.influxHost.c_str(),
+              appConfig.influxPort);
 }
 
 volatile bool isUpdatingOTA = false;
@@ -83,15 +137,13 @@ std::mutex dataMutex;
 std::map<uint16_t, PowerStatsAccumulator> nodeAccumulators;
 
 void setup() {
-  Serial.begin(115200);
-  pinMode(21, OUTPUT);
-  digitalWrite(21, LOW); // Set to RX mode for sniffing
-  Serial1.setRxBufferSize(kRxBufferSize);
-  Serial1.begin(38400, SERIAL_8N1, RX_PIN, TX_PIN);
+  loadSettings();
 
-  // Setup Sniffing Pin (if required by hardware, e.g. RS485 RE/DE)
-  pinMode(21, OUTPUT);
-  digitalWrite(21, LOW); // RX Mode
+  Serial.begin(115200);
+  pinMode(appConfig.enPin, OUTPUT);
+  digitalWrite(appConfig.enPin, LOW); // Set to RX mode for sniffing
+  Serial1.setRxBufferSize(kRxBufferSize);
+  Serial1.begin(38400, SERIAL_8N1, appConfig.rxPin, appConfig.txPin);
 
   Serial.println("Starting Tigo Sniffer...");
 
@@ -101,18 +153,15 @@ void setup() {
   }
 
   // Setup NetWizard (WiFi Manager)
-#ifdef HOSTNAME
-  netWizard.setHostname(HOSTNAME);
-#endif
+  netWizard.setHostname(appConfig.hostname.c_str());
   netWizard.autoConnect("TigoTell", "");
 
   // mDNS
-#ifdef HOSTNAME
-  if (!MDNS.begin(HOSTNAME)) {
+  if (!MDNS.begin(appConfig.hostname.c_str())) {
     Serial.println("Error setting up MDNS responder!");
   }
-  Serial.printf("mDNS responder started at %s.local\n", HOSTNAME);
-#endif
+  Serial.printf("mDNS responder started at %s.local\n",
+                appConfig.hostname.c_str());
 
   // Setup WebSerial
   WebSerial.begin(&server);
@@ -178,6 +227,73 @@ void setup() {
         request->beginResponseStream("application/json");
     serializeJson(doc, *response);
     request->send(response);
+  });
+
+  // Config GET endpoint
+  server.on("/api/config", HTTP_GET, [](AsyncWebServerRequest *request) {
+    JsonDocument doc;
+    doc["hostname"] = appConfig.hostname;
+    doc["txPin"] = appConfig.txPin;
+    doc["rxPin"] = appConfig.rxPin;
+    doc["enPin"] = appConfig.enPin;
+    doc["influxHost"] = appConfig.influxHost;
+    doc["influxPort"] = appConfig.influxPort;
+    doc["pushStatsInterval"] = appConfig.pushStatsInterval;
+    doc["measurementName"] = appConfig.measurementName;
+    doc["minSecondsNodeUpdates"] = appConfig.minSecondsNodeUpdates;
+    doc["minSecondsNodeTableUpdates"] = appConfig.minSecondsNodeTableUpdates;
+
+    AsyncResponseStream *response =
+        request->beginResponseStream("application/json");
+    serializeJson(doc, *response);
+    request->send(response);
+  });
+
+  // Config POST endpoint
+  server.on(
+      "/api/config", HTTP_POST, [](AsyncWebServerRequest *request) {}, NULL,
+      [](AsyncWebServerRequest *request, uint8_t *data, size_t len,
+         size_t index, size_t total) {
+        JsonDocument doc;
+        DeserializationError error = deserializeJson(doc, data, len);
+        if (!error) {
+          if (doc.containsKey("hostname"))
+            appConfig.hostname = doc["hostname"].as<String>();
+          if (doc.containsKey("txPin"))
+            appConfig.txPin = doc["txPin"];
+          if (doc.containsKey("rxPin"))
+            appConfig.rxPin = doc["rxPin"];
+          if (doc.containsKey("enPin"))
+            appConfig.enPin = doc["enPin"];
+          if (doc.containsKey("influxHost"))
+            appConfig.influxHost = doc["influxHost"].as<String>();
+          if (doc.containsKey("influxPort"))
+            appConfig.influxPort = doc["influxPort"];
+          if (doc.containsKey("pushStatsInterval"))
+            appConfig.pushStatsInterval = doc["pushStatsInterval"];
+          if (doc.containsKey("measurementName"))
+            appConfig.measurementName = doc["measurementName"].as<String>();
+          if (doc.containsKey("minSecondsNodeUpdates"))
+            appConfig.minSecondsNodeUpdates = doc["minSecondsNodeUpdates"];
+          if (doc.containsKey("minSecondsNodeTableUpdates"))
+            appConfig.minSecondsNodeTableUpdates =
+                doc["minSecondsNodeTableUpdates"];
+
+          saveSettings();
+          request->send(200, "text/plain", "OK");
+        } else {
+          request->send(400, "text/plain", "Invalid JSON");
+        }
+      });
+
+  // Reboot endpoint
+  server.on("/api/reboot", HTTP_POST, [](AsyncWebServerRequest *request) {
+    request->send(200, "text/plain", "Rebooting...");
+    // Let the response finish before rebooting
+    request->onDisconnect([]() {
+      delay(500);
+      ESP.restart();
+    });
   });
 
   // Serve static files from LittleFS
@@ -247,7 +363,8 @@ void loop() {
           shouldSend = true;
         } else {
           if (currentTime - lastUpdateTimes[powerFrame->pv_node_id] >
-              MIN_SECONDS_BETWEEN_NODE_UPDATES * 1000) {
+              static_cast<unsigned long>(appConfig.minSecondsNodeUpdates) *
+                  1000) {
             shouldSend = true;
           }
         }
@@ -256,7 +373,7 @@ void loop() {
           if (nodeAccumulators[powerFrame->pv_node_id].hasSamples()) {
             std::string lineProtocol =
                 nodeAccumulators[powerFrame->pv_node_id].toInfluxLineProtocol(
-                    MEASUREMENT_NAME, powerFrame->address,
+                    appConfig.measurementName.c_str(), powerFrame->address,
                     powerFrame->pv_node_id);
 
             // Send over UDP
@@ -293,14 +410,15 @@ void loop() {
           shouldSend = true;
         } else {
           if (currentTime - lastUpdateTimesAnnounce[announceFrame->pv_node_id] >
-              MIN_SECONDS_BETWEEN_NODE_UPDATES * 1000) {
+              static_cast<unsigned long>(appConfig.minSecondsNodeUpdates) *
+                  1000) {
             shouldSend = true;
           }
         }
 
         if (shouldSend && WiFi.status() == WL_CONNECTED) {
-          std::string lineProtocol =
-              announceFrame->toInfluxLineProtocol(MEASUREMENT_NAME);
+          std::string lineProtocol = announceFrame->toInfluxLineProtocol(
+              appConfig.measurementName.c_str());
 
           // Send over UDP
           sendUdpPayload(lineProtocol);
@@ -331,8 +449,8 @@ void loop() {
         unsigned long currentTime = millis();
 
         if (WiFi.status() == WL_CONNECTED) {
-          std::string lineProtocol =
-              nodeTableFrame->toInfluxLineProtocol(MEASUREMENT_NAME);
+          std::string lineProtocol = nodeTableFrame->toInfluxLineProtocol(
+              appConfig.measurementName.c_str());
 
           // Send over UDP
           sendUdpPayload(lineProtocol);
@@ -358,11 +476,12 @@ void loop() {
   }
 
   // Send Statistics periodically
-  if (millis() - lastStatsTime > PUSH_STATS_INTERVAL_IN_S * 1000 &&
+  if (millis() - lastStatsTime >
+          static_cast<unsigned long>(appConfig.pushStatsInterval) * 1000 &&
       WiFi.status() == WL_CONNECTED) {
     lastStatsTime = millis();
-    std::string statsLine =
-        parser.getStatisticsInfluxLineProtocol(MEASUREMENT_NAME);
+    std::string statsLine = parser.getStatisticsInfluxLineProtocol(
+        appConfig.measurementName.c_str());
     statsLine +=
         ",uptime=" + std::to_string(esp_timer_get_time() / 1000000) + "i";
 

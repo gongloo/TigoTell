@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>TigoTell Configuration</title>
+    <link rel="stylesheet" href="style.css">
+    <style>
+        .config-card {
+            padding: 2rem;
+            margin-bottom: 2rem;
+        }
+
+        label {
+            display: block;
+            font-size: 0.875rem;
+            font-weight: 600;
+            margin-top: 1.5rem;
+            margin-bottom: 0.5rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
+        input,
+        select {
+            width: 100%;
+            padding: 0.75rem 1rem;
+            background: rgba(255, 255, 255, 0.05);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 0.5rem;
+            color: var(--text);
+            font-size: 1rem;
+            transition: all 0.2s;
+        }
+
+        input:focus {
+            outline: none;
+            border-color: var(--primary);
+            background: rgba(255, 255, 255, 0.1);
+        }
+
+        .help-text {
+            font-size: 0.75rem;
+            color: var(--text-muted);
+            margin-top: 0.25rem;
+        }
+
+        .button-group {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 1rem;
+            margin-top: 2rem;
+            align-items: center;
+        }
+
+        .btn,
+        .btn-primary,
+        .btn-danger {
+            padding: 0.875rem 1.75rem;
+            border-radius: 0.5rem;
+            font-weight: 600;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: all 0.2s;
+            border: none;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-family: inherit;
+            text-decoration: none;
+        }
+
+        .btn-primary {
+            background: var(--primary);
+            color: #fff;
+        }
+
+        .btn-primary:hover {
+            background: var(--secondary);
+            transform: translateY(-1px);
+        }
+
+        .btn-danger {
+            background: rgba(239, 68, 68, 0.1);
+            color: var(--danger);
+            border: 1px solid rgba(239, 68, 68, 0.2);
+        }
+
+        .btn-danger:hover {
+            background: rgba(239, 68, 68, 0.2);
+        }
+
+        .status-msg {
+            padding: 0.875rem 1.75rem;
+            border-radius: 0.5rem;
+            display: none;
+            font-size: 1rem;
+            font-weight: 500;
+            line-height: normal;
+        }
+
+        .status-success {
+            display: block;
+            background: rgba(109, 173, 18, 0.1);
+            color: var(--success);
+            border: 1px solid rgba(109, 173, 18, 0.2);
+        }
+
+        .status-error {
+            display: block;
+            background: rgba(239, 68, 68, 0.1);
+            color: var(--danger);
+            border: 1px solid rgba(239, 68, 68, 0.2);
+        }
+
+        section h2 {
+            font-size: 1rem;
+            color: var(--accent);
+        }
+
+        .grid-2 {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 1.5rem;
+        }
+
+        @media (max-width: 600px) {
+            .grid-2 {
+                grid-template-columns: 1fr;
+            }
+        }
+    </style>
+</head>
+
+<body>
+    <div class="container">
+        <header>
+            <div>
+                <a href="/" class="back-link">← Back to Dashboard</a>
+                <h1>Configuration</h1>
+            </div>
+        </header>
+
+        <form id="config-form">
+            <section class="card config-card">
+                <h2>General Settings</h2>
+                <label for="hostname">Hostname</label>
+                <input type="text" id="hostname" name="hostname" maxlength="32" placeholder="TigoTell">
+                <p class="help-text">Device name on the network and mDNS address.</p>
+            </section>
+
+            <section class="card config-card">
+                <h2>Hardware Pins</h2>
+                <div class="grid-2">
+                    <div>
+                        <label for="txPin">TX Pin</label>
+                        <input type="number" id="txPin" name="txPin" min="0" max="39">
+                    </div>
+                    <div>
+                        <label for="rxPin">RX Pin</label>
+                        <input type="number" id="rxPin" name="rxPin" min="0" max="39">
+                    </div>
+                    <div>
+                        <label for="enPin">Enable Pin (RS485)</label>
+                        <input type="number" id="enPin" name="enPin" min="0" max="39">
+                    </div>
+                </div>
+                <p class="help-text">ESP32 GPIO pins for UART and RS485 enable.</p>
+            </section>
+
+            <section class="card config-card">
+                <h2>InfluxDB Reporting</h2>
+                <div class="grid-2">
+                    <div>
+                        <label for="influxHost">InfluxDB Host</label>
+                        <input type="text" id="influxHost" name="influxHost" placeholder="192.168.1.100">
+                    </div>
+                    <div>
+                        <label for="influxPort">UDP Port</label>
+                        <input type="number" id="influxPort" name="influxPort" min="0" max="65535">
+                    </div>
+                </div>
+                <p class="help-text">Leave Host empty or Port at 0 to disable UDP reporting.</p>
+                <label for="measurementName">Measurement Name</label>
+                <input type="text" id="measurementName" name="measurementName">
+                <label for="pushStatsInterval">Stats Push Interval (s)</label>
+                <input type="number" id="pushStatsInterval" name="pushStatsInterval" min="10" max="3600">
+            </section>
+
+            <section class="card config-card">
+                <h2>Throttling</h2>
+                <div class="grid-2">
+                    <div>
+                        <label for="minSecondsNodeUpdates">Node Update Interval (s)</label>
+                        <input type="number" id="minSecondsNodeUpdates" name="minSecondsNodeUpdates" min="1" max="3600">
+                    </div>
+                    <div>
+                        <label for="minSecondsNodeTableUpdates">NodeTable Update Interval (s)</label>
+                        <input type="number" id="minSecondsNodeTableUpdates" name="minSecondsNodeTableUpdates" min="1"
+                            max="3600">
+                    </div>
+                </div>
+                <p class="help-text">Minimum time between sending updates for individual nodes and the full table.</p>
+            </section>
+
+            <div class="button-group">
+                <button type="submit" class="btn btn-primary">Save Configuration</button>
+                <button type="button" id="reboot-btn" class="btn btn-danger">Reboot Device</button>
+                <div id="status-msg" class="status-msg"></div>
+            </div>
+        </form>
+    </div>
+
+    <script>
+        const form = document.getElementById('config-form');
+        const statusMsg = document.getElementById('status-msg');
+        const rebootBtn = document.getElementById('reboot-btn');
+
+        function showStatus(msg, isError = false) {
+            statusMsg.innerText = msg;
+            statusMsg.className = 'status-msg ' + (isError ? 'status-error' : 'status-success');
+            setTimeout(() => {
+                statusMsg.style.display = 'none';
+            }, 5000);
+        }
+
+        async function loadConfig() {
+            try {
+                const response = await fetch('/api/config');
+                const config = await response.json();
+                for (const key in config) {
+                    const input = document.getElementById(key);
+                    if (input) {
+                        input.value = config[key];
+                    }
+                }
+            } catch (error) {
+                console.error('Failed to load config:', error);
+                showStatus('Failed to load configuration from device.', true);
+            }
+        }
+
+        form.onsubmit = async (e) => {
+            e.preventDefault();
+            const formData = new FormData(form);
+            const data = {};
+            formData.forEach((value, key) => {
+                // Convert numbers
+                if (['txPin', 'rxPin', 'enPin', 'influxPort', 'pushStatsInterval', 'minSecondsNodeUpdates', 'minSecondsNodeTableUpdates'].includes(key)) {
+                    data[key] = value.trim() ? parseInt(value) : 0;
+                } else {
+                    data[key] = value;
+                }
+            });
+
+            try {
+                const response = await fetch('/api/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(data)
+                });
+                if (response.ok) {
+                    showStatus('Configuration saved successfully! Reboot required for some changes.');
+                } else {
+                    const err = await response.text();
+                    showStatus('Failed to save configuration: ' + err, true);
+                }
+            } catch (error) {
+                showStatus('Error communicating with device.', true);
+            }
+        };
+
+        rebootBtn.onclick = async () => {
+            if (confirm('Are you sure you want to reboot the device?')) {
+                try {
+                    await fetch('/api/reboot', { method: 'POST' });
+                    showStatus('Reboot command sent. Reconnecting in 10 seconds...');
+                    setTimeout(() => {
+                        window.location.href = '/';
+                    }, 10000);
+                } catch (error) {
+                    showStatus('Failed to send reboot command.', true);
+                }
+            }
+        };
+
+        loadConfig();
+    </script>
+</body>
+
+</html>

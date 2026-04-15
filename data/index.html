@@ -5,62 +5,10 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>TigoTell Dashboard</title>
+  <link rel="stylesheet" href="style.css">
   <style>
-    :root {
-      --primary: #6dad12;
-      --secondary: #3a6d00;
-      --bg: #1c1917;
-      --card-bg: rgba(41, 37, 36, 0.7);
-      --text: #fafaf9;
-      --text-muted: #a8a29e;
-      --success: var(--primary);
-      --danger: #f87171;
-      --accent: #b4eb82;
-      --warning: #eab308;
-      --stale-bg: #eab3081a;
-      --font-family: 'Inter', -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    }
-
-    * {
-      box-sizing: border-box;
-      margin: 0;
-      padding: 0;
-    }
-
-    body {
-      font-family: var(--font-family);
-      background: var(--bg);
-      color: var(--text);
-      line-height: 1.6;
-      min-height: 100vh;
-      padding: 2rem;
-      background-image:
-        radial-gradient(100% 50% at 0% 0%, #65a30d26 0, transparent 50%),
-        radial-gradient(100% 50% at 100% 50%, #f5b34226 0, transparent 50%),
-        radial-gradient(100% 50% at 0% 100%, #65a30d26 0, transparent 50%)
-    }
-
-    .container {
-      max-width: 1200px;
-      margin: 0 auto;
-    }
-
-    header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      margin-bottom: 2rem;
-      padding-bottom: 1rem;
-      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
-    }
-
-    h1 {
-      font-size: 1.875rem;
-      font-weight: 700;
-      background: linear-gradient(to right, var(--primary), var(--secondary));
-      -webkit-background-clip: text;
-      background-clip: text;
-      -webkit-text-fill-color: transparent;
+    h2 {
+      margin-bottom: 1.5rem;
     }
 
     .status-badge {
@@ -126,11 +74,7 @@
     }
 
     .stat-card {
-      background: var(--card-bg);
-      backdrop-filter: blur(12px);
       padding: 1.25rem 1.5rem;
-      border-radius: 1rem;
-      border: 1px solid rgba(255, 255, 255, 0.1);
       display: flex;
       flex-direction: column;
     }
@@ -174,23 +118,6 @@
       margin-bottom: 3rem;
     }
 
-    h2 {
-      font-size: 1.25rem;
-      margin-bottom: 1.5rem;
-      display: flex;
-      align-items: center;
-      gap: 0.75rem;
-    }
-
-    h2::before {
-      content: '';
-      display: block;
-      width: 4px;
-      height: 24px;
-      background: var(--primary);
-      border-radius: 2px;
-    }
-
     .power-grid {
       display: grid;
       grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
@@ -198,11 +125,6 @@
     }
 
     .power-card {
-      background: var(--card-bg);
-      backdrop-filter: blur(12px);
-      border-radius: 1rem;
-      border: 1px solid rgba(255, 255, 255, 0.1);
-      overflow: hidden;
       display: flex;
       flex-direction: column;
     }
@@ -237,10 +159,6 @@
 
     .power-card.stale .stale-badge {
       display: inline-block;
-    }
-
-    .power-card.stale .address {
-      margin-left: '0.5rem';
     }
 
     .card-body {
@@ -287,7 +205,7 @@
 
     .power-card .address::before {
       content: 'Addr: ';
-      font-family: var(--font-family);
+      /* font-family: var(--font-family); */
     }
 
     .power-card .updated {
@@ -320,11 +238,6 @@
     table {
       width: 100%;
       border-collapse: collapse;
-      background: var(--card-bg);
-      backdrop-filter: blur(12px);
-      border-radius: 1rem;
-      overflow: hidden;
-      border: 1px solid rgba(255, 255, 255, 0.1);
     }
 
     th,
@@ -347,16 +260,6 @@
     }
 
     @media (max-width: 768px) {
-      body {
-        padding: 1rem;
-      }
-
-      header {
-        flex-direction: column;
-        align-items: flex-start;
-        gap: 1rem;
-      }
-
       .power-grid {
         grid-template-columns: 1fr;
       }
@@ -371,57 +274,63 @@
         <h1>TigoTell Dashboard</h1>
         <p id="build-version" style="font-size: 0.75rem; color: var(--text-muted);">Loading...</p>
       </div>
-      <div id="status-badge" class="status-badge status-live">
-        <div id="status-dot" class="status-dot"></div>
-        <span id="status-text">Loading...</span>
+      <div style="display: flex; gap: 0.5rem; align-items: center;">
+        <div id="status-badge" class="status-badge status-live">
+          <div id="status-dot" class="status-dot"></div>
+          <span id="status-text">Loading...</span>
+        </div>
+        <a href="/config.html" class="status-badge" title="Settings" style="padding: 0.5rem; color: inherit;">
+          <img src="images/material-design/cog.svg"
+            style="width: 1.25rem; height: 1.25rem; filter: invert(0.8); display: block;">
+        </a>
       </div>
     </header>
 
     <section>
       <div class="stats-grid">
-        <div class="stat-card" style="--card-icon: url('images/material-design/solar-power.svg');">
+        <div class="card stat-card" style="--card-icon: url('images/material-design/solar-power.svg');">
           <div class="stat-card-header">
             <span class="stat-label">Current Power</span>
           </div>
           <span class="stat-value" id="stat-wattage">-</span>
         </div>
-        <div class="stat-card" style="--card-icon: url('images/material-design/swap-vertical-circle.svg');">
+        <div class="card stat-card" style="--card-icon: url('images/material-design/swap-vertical-circle.svg');">
           <div class="stat-card-header">
             <span class="stat-label">Total Frames</span>
           </div>
           <span class="stat-value" id="stat-total">-</span>
         </div>
-        <div class="stat-card" style="--card-icon: url('images/material-design/lightning-bolt-circle.svg');">
+        <div class="card stat-card" style="--card-icon: url('images/material-design/lightning-bolt-circle.svg');">
           <div class="stat-card-header">
             <span class="stat-label">Power Frames</span>
           </div>
           <span class="stat-value" id="stat-power">-</span>
         </div>
-        <div class="stat-card" style="--card-icon: url('images/material-design/contactless-payment-circle.svg');">
+        <div class="card stat-card" style="--card-icon: url('images/material-design/contactless-payment-circle.svg');">
           <div class="stat-card-header">
             <span class="stat-label">Announce Frames</span>
           </div>
           <span class="stat-value" id="stat-announce">-</span>
         </div>
-        <div class="stat-card" style="--card-icon: url('images/material-design/dots-vertical-circle.svg');">
+        <div class="card stat-card" style="--card-icon: url('images/material-design/dots-vertical-circle.svg');">
           <div class="stat-card-header">
             <span class="stat-label">Registry Frames</span>
           </div>
           <span class="stat-value" id="stat-nodetable">-</span>
         </div>
-        <div class="stat-card" style="--card-icon: url('images/material-design/alert-circle.svg');">
+        <div class="card stat-card" style="--card-icon: url('images/material-design/alert-circle.svg');">
           <div class="stat-card-header">
             <span class="stat-label">CRC Errors</span>
           </div>
           <span class="stat-value" id="stat-crc">-</span>
         </div>
-        <div class="stat-card" style="--card-icon: url('images/material-design/solar-panel.svg');">
+        <div class="card stat-card" style="--card-icon: url('images/material-design/solar-panel.svg');">
           <div class="stat-card-header">
             <span class="stat-label">PV Nodes</span>
           </div>
           <span class="stat-value" id="stat-nodes">-</span>
         </div>
-        <div class="stat-card" style="--card-icon: url('images/material-design/clock.svg');">
+        <div class="card stat-card" style="--card-icon: url('images/material-design/clock.svg');">
           <div class="stat-card-header">
             <span class="stat-label">Uptime</span>
           </div>
@@ -440,7 +349,7 @@
     <section>
       <h2>Discovery Registry</h2>
       <div style="overflow-x: auto;">
-        <table>
+        <table class="card">
           <thead>
             <tr>
               <th>ID</th>
@@ -555,7 +464,7 @@
           const timeString = updateTime.toLocaleTimeString();
 
           return `
-                    <div class="power-card ${isStale ? 'stale' : ''}">
+                    <div class="card power-card ${isStale ? 'stale' : ''}">
                         <div class="card-header">
                             <span class="node-id">${p.pv_node_id}</span>
                             <span class="address">${formatAddress(p.address)}</span>

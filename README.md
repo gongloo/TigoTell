@@ -41,32 +41,25 @@ Non-intrusively monitors communication between Tigo Cloud Connect Advanced (CCA)
 ## 🚀 Getting Started
 
 ### 1. Configuration
-Clone the repository and prepare the required configuration files:
+Clone the repository and prepare the required environment file:
 ```bash
 git clone https://github.com/gongloo/TigoTell.git
 cd TigoTell
-```
-
-Copy the example configuration files and edit them to match your setup:
-```bash
-cp src/config.example.h src/config.h
 cp platformio_upload.example.ini platformio_upload.ini
 ```
 
-- In `src/config.h`, uncomment and define your InfluxDB hostname/IP, port, and the exact pins your RS485 transceiver uses (defaults are typically TX=17, RX=18, EN=21).
 - In `platformio_upload.ini`, configure your OTA credentials (`custom_username` and `custom_password`).
+- Hardware settings (GPIO pins), InfluxDB details, and reporting intervals are now handled dynamically via the **Web Dashboard** after deployment.
 
 ### 2. Build and Flash
 Use pioarduino to compile the firmware and flash it via USB:
 ```bash
 pio run -e esp32-s3-devkitm-1 -t upload
+pio run -e esp32-s3-devkitm-1 -t uploadfs
 ```
 
 > [!IMPORTANT]
 > For the initial flash over USB, Over-The-Air (OTA) updates will not be available yet. **You must comment out the `upload_protocol = custom` line in `platformio.ini`** to force a USB upload instead of attempting an OTA update. You can uncomment it again for future OTA flashes.
-
-> [!NOTE]
-> Make sure to also run the `uploadfs` target if LittleFS requires a fresh image, although normal firmware updates bundle necessary files.*
 
 ### 3. Network Provisioning
 1. Once flashed, the ESP32 will broadcast a WiFi Access Point named `TigoTell`.
@@ -76,6 +69,8 @@ pio run -e esp32-s3-devkitm-1 -t upload
 
 ### 4. Usage
 Once connected to your local network, you can access the device in your browser via mdns (`http://TigoTell.local`) or its assigned IP address.
+
+- **Settings**: Click the **Cog Icon** on the dashboard to configure Hardware Pins (TX, RX, EN), InfluxDB host/port, and reporting intervals.
 - **`/json`**: Returns a snapshot of all discovered nodes and their latest parsed data, including system stats.
 - **`/version`**: Returns the current firmware version and build timestamp.
 - **`/update`**: Access the ElegantOTA firmware update portal.
