@@ -1,12 +1,12 @@
 #include <Arduino.h>
 #include <ArduinoJson.h>
+#include <AsyncUDP.h>
 #include <ESPAsyncWebServer.h>
 #include <ESPmDNS.h>
 #include <ElegantOTA.h>
 #include <LittleFS.h>
 #include <NetWizard.h>
 #include <WebSerial.h>
-#include <WiFiUdp.h>
 
 #include <limits>
 #include <map>
@@ -17,12 +17,38 @@
 #include "TigoProtocol.h"
 #include "Version.h"
 #include "config.h"
+#include <esp_wifi.h>
 
 // Increase to help prevent overflow (CRC errors result).
 constexpr size_t kRxBufferSize = 1024;
 
-WiFiUDP udp;
+AsyncUDP udp;
 TigoParser parser;
+
+void sendUdpPayload(const std::string &payload) {
+  if (payload.empty() || WiFi.status() != WL_CONNECTED) {
+    return;
+  }
+  udp.writeTo(reinterpret_cast<const uint8_t *>(payload.c_str()),
+              payload.length(), kInfluxHost, kInfluxPort);
+}
+
+volatile bool isUpdatingOTA = false;
+
+void onOTAStart() {
+  isUpdatingOTA = true;
+  WebSerial.println("OTA Update Started. Pausing Serial1 reading...");
+}
+
+void onOTAEnd(bool success) {
+  isUpdatingOTA = false;
+  if (success) {
+    WebSerial.println("OTA Update Successful!");
+  } else {
+    WebSerial.println("OTA Update Failed!");
+  }
+}
+
 AsyncWebServer server(80);
 NetWizard netWizard(&server);
 
@@ -165,6 +191,8 @@ void setup() {
   });
 
   // Setup ElegantOTA
+  ElegantOTA.onStart(onOTAStart);
+  ElegantOTA.onEnd(onOTAEnd);
   ElegantOTA.begin(&server, OTA_USER, OTA_PASS);
   server.begin();
 }
@@ -173,15 +201,30 @@ void loop() {
   netWizard.loop();
   ElegantOTA.loop();
 
-  // Read from Serial1 and feed the parser in batches
-  size_t available = Serial1.available();
-  if (available > 0) {
-    uint8_t serialBuf[128];
-    size_t bytesToRead = std::min(available, sizeof(serialBuf));
-    size_t count = Serial1.readBytes(serialBuf, bytesToRead);
-    if (count > 0) {
-      std::lock_guard<std::mutex> lock(dataMutex);
-      parser.pushBytes(serialBuf, count);
+  if (!isUpdatingOTA) {
+    // Actively enforce WiFi sleep mode. Often, internal TCP/IP reconnections
+    // or NetWizard loops will implicitly re-enable 802.11 power saving.
+    static unsigned long lastWifiCheck = 0;
+    if (millis() - lastWifiCheck > 5000) {
+      lastWifiCheck = millis();
+      if (WiFi.status() == WL_CONNECTED) {
+        esp_wifi_set_ps(WIFI_PS_NONE);       // The deep IDF-level disable
+        WiFi.setTxPower(WIFI_POWER_19_5dBm); // Restore to max for stability
+      }
+    }
+
+    // Read from Serial1 and feed the parser in batches
+    size_t available = Serial1.available();
+    if (available > 0) {
+      uint8_t serialBuf[128];
+      size_t bytesToRead = std::min(available, sizeof(serialBuf));
+      size_t count = Serial1.read(
+          serialBuf,
+          bytesToRead); // Direct FIFO extraction, skips Stream::timedRead()
+      if (count > 0) {
+        std::lock_guard<std::mutex> lock(dataMutex);
+        parser.pushBytes(serialBuf, count);
+      }
     }
   }
 
@@ -217,9 +260,7 @@ void loop() {
                     powerFrame->pv_node_id);
 
             // Send over UDP
-            udp.beginPacket(kInfluxHost, kInfluxPort);
-            udp.print(lineProtocol.c_str());
-            udp.endPacket();
+            sendUdpPayload(lineProtocol);
 
             // Debug output
             WebSerial.print("Sent: ");
@@ -262,9 +303,7 @@ void loop() {
               announceFrame->toInfluxLineProtocol(MEASUREMENT_NAME);
 
           // Send over UDP
-          udp.beginPacket(kInfluxHost, kInfluxPort);
-          udp.print(lineProtocol.c_str());
-          udp.endPacket();
+          sendUdpPayload(lineProtocol);
 
           // Debug output
           WebSerial.print("Sent Announce: ");
@@ -296,9 +335,7 @@ void loop() {
               nodeTableFrame->toInfluxLineProtocol(MEASUREMENT_NAME);
 
           // Send over UDP
-          udp.beginPacket(kInfluxHost, kInfluxPort);
-          udp.print(lineProtocol.c_str());
-          udp.endPacket();
+          sendUdpPayload(lineProtocol);
 
           // Debug output
           WebSerial.print("Sent NodeTable: ");
@@ -326,15 +363,12 @@ void loop() {
     lastStatsTime = millis();
     std::string statsLine =
         parser.getStatisticsInfluxLineProtocol(MEASUREMENT_NAME);
+    statsLine +=
+        ",uptime=" + std::to_string(esp_timer_get_time() / 1000000) + "i";
 
-    udp.beginPacket(kInfluxHost, kInfluxPort);
-    udp.print(statsLine.c_str());
-    udp.endPacket();
+    sendUdpPayload(statsLine);
 
     WebSerial.print("Sent Stats: ");
     WebSerial.println(statsLine.c_str());
   }
-
-  // Small yield to keep watchdog happy
-  delay(1);
 }
