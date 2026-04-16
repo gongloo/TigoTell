@@ -55,7 +55,12 @@ jobs:
 
       - name: Copy platformio_upload.ini
         if: steps.check_release.outputs.EXISTS == 'false'
-        run: cp platformio_upload.example.ini platformio_upload.ini
+        run: |
+          if [ ! -f platformio_upload.ini ]; then
+            cp platformio_upload.example.ini platformio_upload.ini
+          else
+            echo "platformio_upload.ini already exists, skipping copy."
+          fi
 
       - name: Build Firmware
         if: steps.check_release.outputs.EXISTS == 'false'
