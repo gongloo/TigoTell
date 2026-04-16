@@ -53,15 +53,6 @@ jobs:
           python -m pip install --upgrade pip
           pip install -U platformio esptool
 
-      - name: Copy platformio_upload.ini
-        if: steps.check_release.outputs.EXISTS == 'false'
-        run: |
-          if [ ! -f platformio_upload.ini ]; then
-            cp platformio_upload.example.ini platformio_upload.ini
-          else
-            echo "platformio_upload.ini already exists, skipping copy."
-          fi
-
       - name: Disable Version Increment
         if: steps.check_release.outputs.EXISTS == 'false'
         run: touch .version_no_increment
