@@ -12,19 +12,21 @@ Non-intrusively monitors communication between Tigo Cloud Connect Advanced (CCA)
 
 ## ✨ Features
 
-- 👃 **Passive Sniffing**  
+- **Passive Sniffing**  
   Safe, receive-only RS485 monitoring without disrupting existing communications.
-- 📋 **Data Parsing**  
-  Decodes Tigo `PowerData`, `Announce`, and `NodeTable` frames (Voltage, Current, Temperature, Duty Cycle, RSSI, etc.).
-- 🗄️ **InfluxDB Integration**  
+- **Data Parsing**  
+  Decodes Tigo essential frames (Voltage, Current, Temperature, Duty Cycle, RSSI, etc.).
+- ️**Runtime Configuration**  
+  Configure hardware pins, InfluxDB details, and reporting intervals via Web UI.
+- **InfluxDB Integration**  
   Streams parsed telemetry directly to an InfluxDB instance over UDP line-protocol.
-- ⌨️ **REST APIs**  
-  Live JSON endpoints for power data, system discovery statistics, and parser health (`/json` and `/version`).
-- 🖥️ **WebSerial Debugging**  
+- ️**REST APIs**  
+  Live JSON endpoints for power data, system discovery statistics, and parser health.
+- **WebSerial Debugging**  
   Built-in web-based serial console.
-- ⬆️ **OTA Updates**  
+- **OTA Updates**  
   Fast and secure Over-The-Air firmware updates using ElegantOTA.
-- 🛜 **WiFi Management**  
+- **WiFi Management**  
   AP-based initial setup for seamless network provisioning utilizing NetWizard.
 
 ## 📋 Requirements
@@ -52,7 +54,7 @@ Non-intrusively monitors communication between Tigo Cloud Connect Advanced (CCA)
 If you have a Chrome-based browser (Chrome, Edge, Opera), you can flash TigoTell directly from your browser. This will install the firmware and filesystem in one go.
 
 1.  Connect your Waveshare board to your computer via USB.
-2.  Click the button below:
+2.  Use a web flasher, such as the one hosted by ESPHome:
 
     [**⚡ Install TigoTell (Web Flasher)**](https://web.esphome.io/?manifest=https://github.com/gongloo/TigoTell/releases/latest/download/manifest.json)
 
