@@ -28,14 +28,17 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if [ "${{ env.ACT }}" == "true" ]; then
+          if [ "$ACT" == "true" ]; then
             echo "Running locally via act, skipping remote check."
             echo "EXISTS=false" >> $GITHUB_OUTPUT
+            echo "IS_ACT=true" >> $GITHUB_OUTPUT
           elif gh release view "v${{ steps.get_version.outputs.VERSION }}" >/dev/null 2>&1; then
             echo "Release v${{ steps.get_version.outputs.VERSION }} already exists."
             echo "EXISTS=true" >> $GITHUB_OUTPUT
+            echo "IS_ACT=false" >> $GITHUB_OUTPUT
           else
             echo "EXISTS=false" >> $GITHUB_OUTPUT
+            echo "IS_ACT=false" >> $GITHUB_OUTPUT
           fi
 
       - name: Set up Python
@@ -65,30 +68,30 @@ jobs:
         if: steps.check_release.outputs.EXISTS == 'false'
         run: |
           BUILD_DIR=".pio/build/esp32-s3-devkitm-1"
-          
+
           # Find system binaries and tools
           BOOT_APP0=$(find ~/.platformio/packages -name boot_app0.bin | head -n 1)
           GEN_PART=$(find ~/.platformio/packages -name gen_esp32part.py | head -n 1)
-          
+
           # Copy boot_app0 for merging
           cp "$BOOT_APP0" "$BUILD_DIR/boot_app0.bin"
-          
+
           # Extract offsets from the partition table
           python3 "$GEN_PART" "$BUILD_DIR/partitions.bin" > partitions.txt
           cat partitions.txt
-          
+
           OTA_OFFSET=$(grep "otadata" partitions.txt | awk -F',' '{print $4}' | xargs)
           APP0_OFFSET=$(grep "app0" partitions.txt | awk -F',' '{print $4}' | xargs)
           LFS_OFFSET=$(grep -E "spiffs|littlefs" partitions.txt | awk -F',' '{print $4}' | xargs)
-          
+
           echo "Detected Offsets - OTA: $OTA_OFFSET, App0: $APP0_OFFSET, LittleFS: $LFS_OFFSET"
-          
+
           # Create a single merged factory binary
           # Note: Bootloader is at 0x0 for ESP32-S3, Partitions at 0x8000
           python3 -m esptool --chip esp32s3 merge_bin \
             -o "$BUILD_DIR/tigotell-factory.bin" \
-            --flash_mode dio \
-            --flash_size 16MB \
+            --flash-mode dio \
+            --flash-size 16MB \
             0x0000 "$BUILD_DIR/bootloader.bin" \
             0x8000 "$BUILD_DIR/partitions.bin" \
             "$OTA_OFFSET" "$BUILD_DIR/boot_app0.bin" \
@@ -113,7 +116,7 @@ jobs:
           EOF
 
       - name: Create Release and Upload Assets
-        if: steps.check_release.outputs.EXISTS == 'false' && !env.ACT
+        if: steps.check_release.outputs.EXISTS == 'false' && steps.check_release.outputs.IS_ACT == 'false'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
