@@ -11,7 +11,7 @@
       margin-bottom: 1.5rem;
     }
 
-    .status-badge {
+    .header-pill {
       display: flex;
       align-items: center;
       gap: 0.5rem;
@@ -21,21 +21,39 @@
       font-size: 0.875rem;
       font-weight: 600;
       transition: all 0.3s ease;
+      cursor: pointer;
     }
 
-    .status-badge.status-live {
+    .header-pill:has(> img:only-child) {
+      padding: 0.5rem;
+    }
+
+    .header-pill.status-live {
       background: rgba(34, 197, 94, 0.1);
       color: var(--success);
     }
 
-    .status-badge.status-stale {
+    .header-pill.status-stale {
       background: var(--stale-bg);
       color: var(--warning);
     }
 
-    .status-badge.status-disconnected {
+    .header-pill.status-disconnected {
       background: rgba(239, 68, 68, 0.1);
       color: var(--danger);
+    }
+
+    #update-available-badge {
+      display: none;
+      background: var(--primary);
+      color: white;
+      font-weight: bold;
+      white-space: nowrap;
+      text-transform: uppercase;
+    }
+
+    #status-badge {
+      cursor: default;
     }
 
     .status-dot {
@@ -272,14 +290,23 @@
     <header>
       <div>
         <h1>TigoTell Dashboard</h1>
-        <p id="build-version" style="font-size: 0.75rem; color: var(--text-muted);">Loading...</p>
+        <p id="build-version-info"
+          style="font-size: 0.75rem; color: var(--text-muted); display: inline-flex; align-items: center; gap: 0.5rem;">
+          Build: <span id="build-version">Loading...</span>
+        </p>
       </div>
       <div style="display: flex; gap: 0.5rem; align-items: center;">
-        <div id="status-badge" class="status-badge status-live">
+        <div id="status-badge" class="header-pill status-live">
           <div id="status-dot" class="status-dot"></div>
           <span id="status-text">Loading...</span>
         </div>
-        <a href="/config.html" class="status-badge" title="Settings" style="padding: 0.5rem; color: inherit;">
+        <a id="update-available-badge" class="header-pill">Update
+          Available</a>
+        <a id="update-check-btn" class="header-pill" title="Check for updates">
+          <img src="images/material-design/upload-network.svg"
+            style="width: 1.25rem; height: 1.25rem; filter: invert(0.8); display: block;">
+        </a>
+        <a href="/config.html" class="header-pill" title="Settings">
           <img src="images/material-design/cog.svg"
             style="width: 1.25rem; height: 1.25rem; filter: invert(0.8); display: block;">
         </a>
@@ -370,6 +397,7 @@
     let serverUptimeMs = 0;
     let lastUpdateLocalTime = Date.now();
     let lastFetchTime = Date.now();
+    let initialVersion = null;
 
     function updateStatus() {
       const now = Date.now();
@@ -402,13 +430,21 @@
         const response = await fetch('/json');
         if (!response.ok) throw new Error('Network response was not ok');
         const data = await response.json();
+ 
+         if (initialVersion === null && data.version) {
+           initialVersion = data.version;
+         } else if (initialVersion && data.version && initialVersion !== data.version) {
+           console.log('Version change detected. Reloading page...');
+           location.reload();
+           return;
+         }
 
         lastFetchTime = Date.now();
         const statusBadge = document.getElementById('status-badge');
         const statusText = document.getElementById('status-text');
         const statusDot = document.getElementById('status-dot');
 
-        statusBadge.className = 'status-badge status-live';
+        statusBadge.className = 'header-pill status-live';
         statusText.innerText = 'Live';
 
         // Trigger pulse animation
@@ -523,10 +559,56 @@
         console.error('Error fetching data:', error);
         const statusBadge = document.getElementById('status-badge');
         const statusText = document.getElementById('status-text');
-        statusBadge.className = 'status-badge status-disconnected';
+        statusBadge.className = 'header-pill status-disconnected';
         statusText.innerText = 'Disconnected';
       }
     }
+
+    const updateCheckBtn = document.getElementById('update-check-btn');
+    const updateBadge = document.getElementById('update-available-badge');
+
+    async function checkUpdates() {
+      updateCheckBtn.style.opacity = '0.5';
+      updateCheckBtn.style.pointerEvents = 'none';
+      try {
+        const response = await fetch('/api/update/check');
+        const data = await response.json();
+        if (data.update_available) {
+          updateBadge.style.display = 'inline-block';
+          updateBadge.title = `Update available: v${data.latest_version}. Click to install.`;
+        } else {
+          updateBadge.style.display = 'none';
+          if (!data.error) alert('System is up to date.');
+        }
+
+        if (data.error) console.error('Update check error:', data.error);
+      } catch (err) {
+        console.error('Failed to check for updates:', err);
+      } finally {
+        updateCheckBtn.style.opacity = '1';
+        updateCheckBtn.style.pointerEvents = 'auto';
+      }
+    }
+
+    updateCheckBtn.onclick = (e) => {
+      e.stopPropagation();
+      checkUpdates();
+    };
+
+    updateBadge.onclick = async () => {
+      if (confirm('Start full system update from GitHub (Firmware + FileSystem)? The device will reboot when finished.')) {
+        try {
+          updateBadge.innerText = 'Updating...';
+          updateBadge.style.background = 'var(--warning)';
+          await fetch('/api/update/execute', { method: 'POST' });
+          alert('Update started. Check WebSerial for progress. The device will reboot automatically.');
+        } catch (err) {
+          alert('Failed to start update.');
+          updateBadge.innerText = 'Update Available';
+          updateBadge.style.background = 'var(--primary)';
+        }
+      }
+    };
 
     setInterval(fetchData, 5000);
     setInterval(updateUptime, 1000);

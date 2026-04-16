@@ -16,6 +16,7 @@
 #include "PowerStatsAccumulator.h"
 #include "TigoProtocol.h"
 #include "Version.h"
+#include <GithubReleaseOTA.h>
 #include <Preferences.h>
 #include <esp_wifi.h>
 
@@ -40,6 +41,7 @@ struct Config {
 
 Config appConfig;
 Preferences preferences;
+String fsVersion = "unknown";
 
 void loadSettings() {
   preferences.begin("tigotell", true);
@@ -103,6 +105,66 @@ void onOTAEnd(bool success) {
   }
 }
 
+void runOtaUpdate(void *parameter) {
+  onOTAStart();
+  GithubReleaseOTA ota("gongloo", "TigoTell");
+  GithubRelease release = ota.getLatestRelease();
+  if (release.tag_name != NULL) {
+    // Normalize versions for comparison
+    String latest = String(release.tag_name);
+    if (latest.startsWith("v"))
+      latest = latest.substring(1);
+    String fwCurrent = String(VERSION);
+
+    bool fwNeedsUpdate = (fwCurrent != latest);
+    bool fsNeedsUpdate = (fsVersion != latest);
+
+    if (fwNeedsUpdate || fsNeedsUpdate) {
+      // 1. Unmount filesystem for safety
+      LittleFS.end();
+      WebSerial.println("Starting selective GitHub Update...");
+
+      // 2. Flash Firmware if out of date (Priority)
+      if (fwNeedsUpdate) {
+        WebSerial.printf("Free heap before Firmware: %d\n", ESP.getFreeHeap());
+        WebSerial.printf("Updating Firmware to %s...\n", latest.c_str());
+        if (ota.flashFirmware(release, "firmware.bin") == OTA_SUCCESS) {
+          WebSerial.println("Firmware updated successfully.");
+        } else {
+          WebSerial.println("Firmware update FAILED or asset missing.");
+        }
+      }
+
+      delay(500);
+      yield();
+
+      // 3. Flash FileSystem if out of date
+      if (fsNeedsUpdate) {
+        WebSerial.printf("Free heap before FileSystem: %d\n",
+                         ESP.getFreeHeap());
+        WebSerial.printf("Updating FileSystem to %s...\n", latest.c_str());
+        if (ota.flashSpiffs(release, "littlefs.bin") == OTA_SUCCESS) {
+          WebSerial.println("FileSystem updated successfully.");
+        } else {
+          WebSerial.println("FileSystem update FAILED or asset missing.");
+        }
+      }
+
+      WebSerial.println("Update sequence complete. Rebooting...");
+      delay(3000);
+      yield();
+      ESP.restart();
+    } else {
+      WebSerial.println("Everything is already up to date.");
+    }
+  } else {
+    WebSerial.println("Failed to fetch latest release for update.");
+  }
+  ota.freeRelease(release);
+  onOTAEnd(false);
+  vTaskDelete(NULL);
+}
+
 AsyncWebServer server(80);
 NetWizard netWizard(&server);
 
@@ -150,6 +212,17 @@ void setup() {
   // Initialize LittleFS
   if (!LittleFS.begin(true)) {
     Serial.println("An Error has occurred while mounting LittleFS");
+  } else {
+    // Read filesystem version
+    if (LittleFS.exists("/version")) {
+      File f = LittleFS.open("/version", "r");
+      if (f) {
+        fsVersion = f.readString();
+        fsVersion.trim();
+        f.close();
+        Serial.printf("FileSystem Version: %s\n", fsVersion.c_str());
+      }
+    }
   }
 
   // Setup NetWizard (WiFi Manager)
@@ -257,7 +330,7 @@ void setup() {
         JsonDocument doc;
         DeserializationError error = deserializeJson(doc, data, len);
         if (!error) {
-          if (doc["hostname"].is<const char*>())
+          if (doc["hostname"].is<const char *>())
             appConfig.hostname = doc["hostname"].as<String>();
           if (doc["txPin"].is<int>())
             appConfig.txPin = doc["txPin"];
@@ -265,13 +338,13 @@ void setup() {
             appConfig.rxPin = doc["rxPin"];
           if (doc["enPin"].is<int>())
             appConfig.enPin = doc["enPin"];
-          if (doc["influxHost"].is<const char*>())
+          if (doc["influxHost"].is<const char *>())
             appConfig.influxHost = doc["influxHost"].as<String>();
           if (doc["influxPort"].is<int>())
             appConfig.influxPort = doc["influxPort"];
           if (doc["pushStatsInterval"].is<int>())
             appConfig.pushStatsInterval = doc["pushStatsInterval"];
-          if (doc["measurementName"].is<const char*>())
+          if (doc["measurementName"].is<const char *>())
             appConfig.measurementName = doc["measurementName"].as<String>();
           if (doc["minSecondsNodeUpdates"].is<int>())
             appConfig.minSecondsNodeUpdates = doc["minSecondsNodeUpdates"];
@@ -298,6 +371,46 @@ void setup() {
 
   // Serve static files from LittleFS
   server.serveStatic("/", LittleFS, "/").setDefaultFile("index.html");
+
+  // GitHub OTA Endpoints
+  server.on("/api/update/check", HTTP_GET, [](AsyncWebServerRequest *request) {
+    // We do the check in-request, which might be slow.
+    // GitHub API can take a second or two.
+    GithubReleaseOTA ota("gongloo", "TigoTell");
+
+    // Optional: Set insecure if certificates are a pain, but let's try defaults
+    // first ota.setInsecure();
+
+    GithubRelease release = ota.getLatestRelease();
+    JsonDocument doc;
+
+    if (release.tag_name != NULL) {
+      // Consolidate update status
+      String latest = String(release.tag_name);
+      if (latest.startsWith("v"))
+        latest = latest.substring(1);
+      doc["latest_version"] = latest;
+      String current = String(VERSION);
+
+      doc["update_available"] = (latest != current || latest != fsVersion);
+    } else {
+      doc["error"] = "Failed to fetch release info";
+    }
+    ota.freeRelease(release);
+
+    AsyncResponseStream *response =
+        request->beginResponseStream("application/json");
+    serializeJson(doc, *response);
+    request->send(response);
+  });
+
+  server.on("/api/update/execute", HTTP_POST,
+            [](AsyncWebServerRequest *request) {
+              request->send(200, "text/plain", "Update started...");
+              // Run update in background task to avoid blocking the server
+              // request
+              xTaskCreate(runOtaUpdate, "ota_task", 8192, NULL, 1, NULL);
+            });
 
   // Debug Dump endpoint
   server.on("/version", HTTP_GET, [](AsyncWebServerRequest *request) {
