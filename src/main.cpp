@@ -99,7 +99,7 @@ volatile bool isUpdatingOTA = false;
 
 void onOTAStart() {
   isUpdatingOTA = true;
-  WebSerial.println("OTA Update Started. Pausing Serial1 reading...");
+  WebSerial.println("OTA Update Started. Pausing reads from Tigo...");
 }
 
 void onOTAEnd(bool success) {
@@ -125,49 +125,53 @@ void runOtaUpdate(void *parameter) {
     bool fwNeedsUpdate = (fwCurrent != latest);
     bool fsNeedsUpdate = (fsVersion != latest);
 
+    WebSerial.printf("Versions - Current FW: %s, FS: %s | Latest: %s\n",
+                     fwCurrent.c_str(), fsVersion.c_str(), latest.c_str());
+
     if (fwNeedsUpdate || fsNeedsUpdate) {
       // 1. Unmount filesystem for safety
-      LittleFS.end();
-      WebSerial.println("Starting selective GitHub Update...");
+      WebSerial.printf("Starting selective GitHub Update to v%s...",
+                       latest.c_str());
+      delay(100);
+      yield();
 
       // 2. Flash Firmware if out of date (Priority)
       if (fwNeedsUpdate) {
-        WebSerial.printf("Free heap before Firmware: %d\n", ESP.getFreeHeap());
-        WebSerial.printf("Updating Firmware to %s...\n", latest.c_str());
         if (ota.flashFirmware(release, "firmware.bin") == OTA_SUCCESS) {
           WebSerial.println("Firmware updated successfully.");
         } else {
           WebSerial.println("Firmware update FAILED or asset missing.");
         }
+        delay(500);
+        yield();
       }
-
-      delay(500);
-      yield();
 
       // 3. Flash FileSystem if out of date
       if (fsNeedsUpdate) {
-        WebSerial.printf("Free heap before FileSystem: %d\n",
-                         ESP.getFreeHeap());
-        WebSerial.printf("Updating FileSystem to %s...\n", latest.c_str());
+        LittleFS.end();
         if (ota.flashSpiffs(release, "littlefs.bin") == OTA_SUCCESS) {
           WebSerial.println("FileSystem updated successfully.");
         } else {
           WebSerial.println("FileSystem update FAILED or asset missing.");
         }
+        delay(500);
+        yield();
       }
 
+      ota.freeRelease(release);
+      onOTAEnd(true);
       WebSerial.println("Update sequence complete. Rebooting...");
       delay(3000);
-      yield();
       ESP.restart();
     } else {
       WebSerial.println("Everything is already up to date.");
+      ota.freeRelease(release);
+      onOTAEnd(true);
     }
   } else {
     WebSerial.println("Failed to fetch latest release for update.");
+    onOTAEnd(false);
   }
-  ota.freeRelease(release);
-  onOTAEnd(false);
   vTaskDelete(NULL);
 }
 
@@ -266,6 +270,7 @@ void setup() {
 
       // Platform/Software Info
       root["version"] = VERSION;
+      root["fs_version"] = fsVersion;
       root["build_timestamp"] = BUILD_TIMESTAMP;
       root["uptime_ms"] = esp_timer_get_time() / 1000;
 
@@ -409,6 +414,10 @@ void setup() {
       doc["latest_version"] = latest;
       String current = String(VERSION);
 
+      WebSerial.printf(
+          "[UpdateCheck] FW Current: %s, FS Current: %s, Github Latest: %s\n",
+          current.c_str(), fsVersion.c_str(), latest.c_str());
+
       doc["update_available"] = (latest != current || latest != fsVersion);
     } else {
       doc["error"] = "Failed to fetch release info";
@@ -426,7 +435,7 @@ void setup() {
               request->send(200, "text/plain", "Update started...");
               // Run update in background task to avoid blocking the server
               // request
-              xTaskCreate(runOtaUpdate, "ota_task", 8192, NULL, 1, NULL);
+              xTaskCreate(runOtaUpdate, "ota_task", 16384, NULL, 1, NULL);
             });
 
   // Debug Dump endpoint

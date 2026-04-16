@@ -291,8 +291,8 @@
       <div>
         <h1>TigoTell Dashboard</h1>
         <p id="build-version-info"
-          style="font-size: 0.75rem; color: var(--text-muted); display: inline-flex; align-items: center; gap: 0.5rem;">
-          Build: <span id="build-version">Loading...</span>
+          style="font-size: 0.75rem; color: var(--text-muted); display: inline-flex; align-items: center; gap: 0.5rem; white-space: nowrap;">
+          <span id="build-version">Loading...</span>
         </p>
       </div>
       <div style="display: flex; gap: 0.5rem; align-items: center;">
@@ -398,6 +398,7 @@
     let lastUpdateLocalTime = Date.now();
     let lastFetchTime = Date.now();
     let initialVersion = null;
+    let initialFsVersion = null;
 
     function updateStatus() {
       const now = Date.now();
@@ -430,14 +431,16 @@
         const response = await fetch('/json');
         if (!response.ok) throw new Error('Network response was not ok');
         const data = await response.json();
- 
-         if (initialVersion === null && data.version) {
-           initialVersion = data.version;
-         } else if (initialVersion && data.version && initialVersion !== data.version) {
-           console.log('Version change detected. Reloading page...');
-           location.reload();
-           return;
-         }
+
+        if (initialVersion === null && data.version) initialVersion = data.version;
+        if (initialFsVersion === null && data.fs_version) initialFsVersion = data.fs_version;
+
+        if ((initialVersion && data.version && initialVersion !== data.version) ||
+          (initialFsVersion && data.fs_version && initialFsVersion !== data.fs_version)) {
+          console.log('Version change detected. Reloading page...');
+          location.reload();
+          return;
+        }
 
         lastFetchTime = Date.now();
         const statusBadge = document.getElementById('status-badge');
