@@ -204,6 +204,21 @@
                 </div>
                 <p class="help-text">Minimum time between sending updates for individual nodes and the full table.</p>
             </section>
+            
+            <section class="card config-card">
+                <h2>OTA Authentication (ElegantOTA)</h2>
+                <div class="grid-2">
+                    <div>
+                        <label for="otaUser">OTA Username</label>
+                        <input type="text" id="otaUser" name="otaUser" placeholder="Keep current">
+                    </div>
+                    <div>
+                        <label for="otaPass">OTA Password</label>
+                        <input type="password" id="otaPass" name="otaPass" placeholder="Keep current">
+                    </div>
+                </div>
+                <p class="help-text">Leave both blank to keep current credentials. Use "..." to disable ElegantOTA.</p>
+            </section>
 
             <div class="button-group">
                 <button type="submit" class="btn btn-primary">Save Configuration</button>

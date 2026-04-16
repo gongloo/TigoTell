@@ -37,6 +37,8 @@ struct Config {
   String measurementName = "tigotell_v0";
   int minSecondsNodeUpdates = 10;
   int minSecondsNodeTableUpdates = 60;
+  String otaUser = "...";
+  String otaPass = "...";
 };
 
 Config appConfig;
@@ -61,6 +63,8 @@ void loadSettings() {
       preferences.getInt("nodeUpd", appConfig.minSecondsNodeUpdates);
   appConfig.minSecondsNodeTableUpdates =
       preferences.getInt("tableUpd", appConfig.minSecondsNodeTableUpdates);
+  appConfig.otaUser = preferences.getString("otaUser", appConfig.otaUser);
+  appConfig.otaPass = preferences.getString("otaPass", appConfig.otaPass);
   preferences.end();
 }
 
@@ -76,6 +80,8 @@ void saveSettings() {
   preferences.putString("measName", appConfig.measurementName);
   preferences.putInt("nodeUpd", appConfig.minSecondsNodeUpdates);
   preferences.putInt("tableUpd", appConfig.minSecondsNodeTableUpdates);
+  preferences.putString("otaUser", appConfig.otaUser);
+  preferences.putString("otaPass", appConfig.otaPass);
   preferences.end();
 }
 
@@ -197,6 +203,7 @@ std::map<uint16_t, unsigned long> lastUpdateTimesAnnounce;
 std::mutex dataMutex;
 
 std::map<uint16_t, PowerStatsAccumulator> nodeAccumulators;
+bool isElegantOtaStarted = false;
 
 void setup() {
   loadSettings();
@@ -351,6 +358,16 @@ void setup() {
           if (doc["minSecondsNodeTableUpdates"].is<int>())
             appConfig.minSecondsNodeTableUpdates =
                 doc["minSecondsNodeTableUpdates"];
+          if (doc["otaUser"].is<const char *>()) {
+            String val = doc["otaUser"].as<String>();
+            if (val.length() > 0)
+              appConfig.otaUser = val;
+          }
+          if (doc["otaPass"].is<const char *>()) {
+            String val = doc["otaPass"].as<String>();
+            if (val.length() > 0)
+              appConfig.otaPass = val;
+          }
 
           saveSettings();
           request->send(200, "text/plain", "OK");
@@ -420,15 +437,26 @@ void setup() {
   });
 
   // Setup ElegantOTA
-  ElegantOTA.onStart(onOTAStart);
-  ElegantOTA.onEnd(onOTAEnd);
-  ElegantOTA.begin(&server, OTA_USER, OTA_PASS);
+  if (appConfig.otaUser.length() > 0 && appConfig.otaUser != "..." &&
+      appConfig.otaPass.length() > 0 && appConfig.otaPass != "...") {
+    ElegantOTA.onStart(onOTAStart);
+    ElegantOTA.onEnd(onOTAEnd);
+    ElegantOTA.begin(&server, appConfig.otaUser.c_str(),
+                     appConfig.otaPass.c_str());
+    isElegantOtaStarted = true;
+    Serial.println("ElegantOTA started with authentication.");
+  } else {
+    isElegantOtaStarted = false;
+    Serial.println("ElegantOTA disabled (no credentials).");
+  }
   server.begin();
 }
 
 void loop() {
   netWizard.loop();
-  ElegantOTA.loop();
+  if (isElegantOtaStarted) {
+    ElegantOTA.loop();
+  }
 
   if (!isUpdatingOTA) {
     // Actively enforce WiFi sleep mode. Often, internal TCP/IP reconnections
