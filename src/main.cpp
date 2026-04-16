@@ -257,25 +257,25 @@ void setup() {
         JsonDocument doc;
         DeserializationError error = deserializeJson(doc, data, len);
         if (!error) {
-          if (doc.containsKey("hostname"))
+          if (doc["hostname"].is<const char*>())
             appConfig.hostname = doc["hostname"].as<String>();
-          if (doc.containsKey("txPin"))
+          if (doc["txPin"].is<int>())
             appConfig.txPin = doc["txPin"];
-          if (doc.containsKey("rxPin"))
+          if (doc["rxPin"].is<int>())
             appConfig.rxPin = doc["rxPin"];
-          if (doc.containsKey("enPin"))
+          if (doc["enPin"].is<int>())
             appConfig.enPin = doc["enPin"];
-          if (doc.containsKey("influxHost"))
+          if (doc["influxHost"].is<const char*>())
             appConfig.influxHost = doc["influxHost"].as<String>();
-          if (doc.containsKey("influxPort"))
+          if (doc["influxPort"].is<int>())
             appConfig.influxPort = doc["influxPort"];
-          if (doc.containsKey("pushStatsInterval"))
+          if (doc["pushStatsInterval"].is<int>())
             appConfig.pushStatsInterval = doc["pushStatsInterval"];
-          if (doc.containsKey("measurementName"))
+          if (doc["measurementName"].is<const char*>())
             appConfig.measurementName = doc["measurementName"].as<String>();
-          if (doc.containsKey("minSecondsNodeUpdates"))
+          if (doc["minSecondsNodeUpdates"].is<int>())
             appConfig.minSecondsNodeUpdates = doc["minSecondsNodeUpdates"];
-          if (doc.containsKey("minSecondsNodeTableUpdates"))
+          if (doc["minSecondsNodeTableUpdates"].is<int>())
             appConfig.minSecondsNodeTableUpdates =
                 doc["minSecondsNodeTableUpdates"];
 
