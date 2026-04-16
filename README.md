@@ -76,30 +76,37 @@ _(If you chose to download `firmware.bin` and `littlefs.bin` separately, use off
 
 If you prefer to build from source using **pioarduino** or **PlatformIO**:
 
-#### Configuration
+No manual configuration of source files is required for the initial build. Hardware settings (GPIO pins), InfluxDB details, and reporting intervals are handled dynamically via the **Web Dashboard** after deployment.
 
-Clone the repository and prepare the required environment file:
+Use **pioarduino** or **PlatformIO** to compile and flash the firmware via USB:
 
-```bash
-git clone https://github.com/gongloo/TigoTell.git
-cd TigoTell
-cp platformio_upload.example.ini platformio_upload.ini
-```
+1. **Clone the repository**:
 
-- In `platformio_upload.ini`, configure your OTA credentials (`custom_username` and `custom_password`).
-- Hardware settings (GPIO pins), InfluxDB details, and reporting intervals are now handled dynamically via the **Web Dashboard** after deployment.
+   ```bash
+   git clone https://github.com/gongloo/TigoTell.git
+   cd TigoTell
+   ```
 
-#### Build and Flash
+2. **Flash via USB**:
 
-Use pioarduino to compile the firmware and flash it via USB:
+   ```bash
+   # Build and upload the firmware
+   pio run -e esp32-s3-devkitm-1 -t upload
 
-```bash
-pio run -e esp32-s3-devkitm-1 -t upload
-pio run -e esp32-s3-devkitm-1 -t uploadfs
-```
+   # Build and upload the filesystem (LittleFS)
+   pio run -e esp32-s3-devkitm-1 -t uploadfs
+   ```
 
-> [!IMPORTANT]
-> For the initial flash over USB, Over-The-Air (OTA) updates will not be available yet. **You must comment out the `upload_protocol = custom` line in `platformio.ini`** to force a USB upload instead of attempting an OTA update. You can uncomment it again for future OTA flashes.
+#### Optional: OTA Configuration
+
+If you wish to upload updates over your local network using PlatformIO:
+
+1. Provision your device with WiFi credentials and **set your OTA username/password via the Web UI**.
+2. **Create the upload configuration**:
+   ```bash
+   cp platformio_upload.example.ini platformio_upload.ini
+   ```
+3. **Edit `platformio_upload.ini`**: Update `custom_upload_url` with your device's IP or mDNS address (e.g., `http://tigotell.local/update`), and set the `custom_username` and `custom_password` to match what you have configured in the Web UI.
 
 ### Network Provisioning
 
@@ -115,7 +122,7 @@ Once connected to your local network, you can access the device in your browser 
 - **Settings**: Click the **Cog Icon** on the dashboard to configure Hardware Pins (TX, RX, EN), InfluxDB host/port, and reporting intervals.
 - **`/json`**: Returns a snapshot of all discovered nodes and their latest parsed data, including system stats.
 - **`/version`**: Returns the current firmware version and build timestamp.
-- **`/update`**: Access the ElegantOTA firmware update portal.
+- **`/update`**: Access the ElegantOTA firmware update portal, if enabled.
 - **`/webserial`**: View live serial log output.
 
 ## 🙏 Credits & Acknowledgments
