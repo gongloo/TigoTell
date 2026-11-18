@@ -127,6 +127,10 @@ Once connected to your local network, you can access the device in your browser 
 - **`/update`**: Access the ElegantOTA firmware update portal, if enabled.
 - **`/webserial`**: View live serial log output.
 
+### Home Assistant
+
+[miketkf/ha-tigotell](https://github.com/miketkf/ha-tigotell) provides an integration to connect your TigoTell to Home Assistant.
+
 ## 🙏 Credits & Acknowledgments
 
 This project stands on the shoulders of the incredible reverse-engineering work done by the community. A massive thank you to the following projects which provided the foundation for decoding the Tigo protocols:
