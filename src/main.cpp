@@ -328,6 +328,7 @@ void setup() {
     doc["measurementName"] = appConfig.measurementName;
     doc["minSecondsNodeUpdates"] = appConfig.minSecondsNodeUpdates;
     doc["minSecondsNodeTableUpdates"] = appConfig.minSecondsNodeTableUpdates;
+    doc["otaEnabled"] = isElegantOtaStarted;
 
     AsyncResponseStream *response =
         request->beginResponseStream("application/json");
@@ -458,6 +459,21 @@ void setup() {
   } else {
     isElegantOtaStarted = false;
     Serial.println("ElegantOTA disabled (no credentials).");
+    // Explain instead of answering "Not found".
+    server.on("/update", HTTP_GET, [](AsyncWebServerRequest *request) {
+      request->send(
+          200, "text/html",
+          "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"UTF-8\">"
+          "<meta name=\"viewport\" content=\"width=device-width, "
+          "initial-scale=1.0\"><title>Firmware update disabled</title>"
+          "<link rel=\"stylesheet\" href=\"/style.css\"></head><body>"
+          "<div class=\"container\"><header><h1>Firmware update disabled"
+          "</h1></header><p>The firmware upload page needs a username and "
+          "password.</p><p>Set them under <a href=\"/config.html#ota\">"
+          "Settings &rsaquo; OTA Authentication</a>, save, then reboot the "
+          "device.</p><p><a href=\"/\">Back to dashboard</a></p></div>"
+          "</body></html>");
+    });
   }
   server.begin();
 }

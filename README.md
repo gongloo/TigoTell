@@ -124,7 +124,7 @@ Once connected to your local network, you can access the device in your browser 
 - **Settings**: Click the **Cog Icon** on the dashboard to configure Hardware Pins (TX, RX, EN), InfluxDB host/port, and reporting intervals.
 - **`/json`**: Returns a snapshot of all discovered nodes and their latest parsed data, including system stats.
 - **`/version`**: Returns the current firmware version and build timestamp.
-- **`/update`**: Access the ElegantOTA firmware update portal, if enabled.
+- **`/update`**: Access the ElegantOTA firmware update portal. It is enabled once OTA username and password are set in the settings and the device has been rebooted; until then the page explains this.
 - **`/webserial`**: View live serial log output.
 
 ### Home Assistant
