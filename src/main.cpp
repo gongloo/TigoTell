@@ -182,6 +182,76 @@ NetWizard netWizard(&server);
 
 unsigned long lastStatsTime = 0;
 
+// A TAP that sent nothing for this long counts as offline.
+constexpr uint32_t kTapOfflineMs = 60000;
+// Modules heard through a TAP within this window count as connected to it.
+constexpr uint32_t kTapModuleWindowMs = 300000;
+
+String tapHexId(uint16_t id) {
+  char buf[8];
+  snprintf(buf, sizeof(buf), "%04X", id);
+  return buf;
+}
+
+// "ok", "degraded" (answers fewer than 90 % of recent polls) or "offline".
+const char *tapState(const TigoGatewayStatus &gw, uint32_t now) {
+  if (!gw.seen || now - gw.lastSeenMs > kTapOfflineMs)
+    return "offline";
+  int pct = gw.recentAnsweredPercent();
+  return pct >= 0 && pct < 90 ? "degraded" : "ok";
+}
+
+void tapToJson(JsonObject o, const TigoGatewayStatus &gw, uint32_t now) {
+  o["id"] = tapHexId(gw.id);
+  o["state"] = tapState(gw, now);
+  if (gw.seen)
+    o["last_seen_s"] = (now - gw.lastSeenMs) / 1000;
+  o["polls"] = gw.polls;
+  o["answered"] = gw.answered;
+  o["missed"] = gw.missed;
+  int pct = gw.recentAnsweredPercent();
+  if (pct >= 0)
+    o["recent_answered_pct"] = pct;
+  if (gw.rxBuffersUsed >= 0) {
+    o["rx_buffers_used"] = gw.rxBuffersUsed;
+    o["rx_buffers_max"] = gw.rxBuffersMax;
+  }
+  if (gw.txBuffersFree >= 0) {
+    o["tx_buffers_free"] = gw.txBuffersFree;
+    if (gw.txBuffersMin >= 0)
+      o["tx_buffers_min"] = gw.txBuffersMin;
+  }
+  if (gw.slotCounter >= 0)
+    o["slot_counter"] = gw.slotCounter;
+  o["packets"] = gw.packets;
+  o["power_reports"] = gw.powerReports;
+  int modules = 0;
+  long rssiSum = 0;
+  int rssiMin = 999;
+  for (auto const &[node, seen] : gw.nodes) {
+    if (now - seen.lastMs > kTapModuleWindowMs)
+      continue;
+    modules++;
+    rssiSum += seen.rssi;
+    rssiMin = std::min(rssiMin, seen.rssi);
+  }
+  o["modules"] = modules;
+  if (modules > 0) {
+    o["rssi_avg"] = static_cast<int>(rssiSum / modules);
+    o["rssi_min"] = rssiMin;
+  }
+  auto bc = parser.getGatewayBarcodes().find(gw.id);
+  if (bc != parser.getGatewayBarcodes().end())
+    o["barcode"] = bc->second.c_str();
+  if (!gw.version.empty())
+    o["version"] = gw.version.c_str();
+  if (gw.radioChannel >= 0)
+    o["radio_channel"] = gw.radioChannel;
+  if (gw.panId >= 0)
+    o["pan_id"] = tapHexId(gw.panId);
+}
+
+
 // Store the latest power frame and timestamp for each node
 struct PowerNodeData {
   std::shared_ptr<TigoPowerFrame> frame;
@@ -346,7 +416,17 @@ void setup() {
         node["temperature"] = frame->temperature;
         node["duty_cycle"] = frame->duty_cycle;
         node["rssi"] = frame->rssi;
+        if (frame->gateway_id)
+          node["gateway"] = tapHexId(frame->gateway_id);
         node["last_updated"] = val.last_updated;
+      }
+
+      // TAPs (gateways) as seen on the bus
+      JsonArray taps = root["taps"].to<JsonArray>();
+      uint32_t nowMs = millis();
+      for (auto const &[id, gw] : parser.getGateways()) {
+        if (gw.seen || gw.polls > 0)
+          tapToJson(taps.add<JsonObject>(), gw, nowMs);
       }
 
       // Discovery Data (Persistent Map)
@@ -567,6 +647,7 @@ void loop() {
           bytesToRead); // Direct FIFO extraction, skips Stream::timedRead()
       if (count > 0) {
         std::lock_guard<std::mutex> lock(dataMutex);
+        parser.setTime(millis());
         parser.pushBytes(serialBuf, count);
       }
     }
