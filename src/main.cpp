@@ -392,6 +392,71 @@ std::mutex dataMutex;
 std::map<uint16_t, PowerStatsAccumulator> nodeAccumulators;
 bool isElegantOtaStarted = false;
 
+// Layout for the designer page. Stored in NVS (not LittleFS), because a
+// filesystem update overwrites LittleFS completely. NVS is small (20 KB) and
+// shared with WiFi, PHY calibration and settings, so the layout may only use
+// what is left after keeping a reserve for those.
+constexpr size_t kLayoutMaxBytes = 8192;
+constexpr size_t kNvsReserveEntries = 64; // ~2 KB kept free for others
+const char *kDefaultLayout = "{\"v\":1,\"el\":[]}";
+
+// NVS entries a blob occupies: 32-byte data entries, a header per chunk (one
+// chunk per 4 KB page) and an index entry.
+size_t blobEntries(size_t len) {
+  return len == 0 ? 0 : (len + 31) / 32 + (len + 3999) / 4000 + 2;
+}
+
+size_t storedLayoutLength() {
+  size_t len = 0;
+  if (preferences.begin("tigolayout", true)) {
+    len = preferences.getBytesLength("layout");
+    preferences.end();
+  }
+  return len;
+}
+
+// Largest layout that can be stored right now.
+size_t layoutCapacity() {
+  nvs_stats_t stats;
+  if (nvs_get_stats(NULL, &stats) != ESP_OK)
+    return 0;
+  long entries = static_cast<long>(stats.available_entries) +
+                 static_cast<long>(blobEntries(storedLayoutLength())) -
+                 static_cast<long>(kNvsReserveEntries);
+  // Overhead of a blob that spans up to three pages.
+  long bytes = (entries - 5) * 32;
+  if (bytes <= 0)
+    return 0;
+  return std::min(static_cast<size_t>(bytes), kLayoutMaxBytes);
+}
+
+String loadLayout() {
+  String layout;
+  if (preferences.begin("tigolayout", true)) {
+    size_t len = preferences.getBytesLength("layout");
+    if (len > 0) {
+      std::unique_ptr<char[]> buf(new (std::nothrow) char[len + 1]);
+      if (buf && preferences.getBytes("layout", buf.get(), len) == len) {
+        buf[len] = '\0';
+        layout = buf.get();
+      }
+    }
+    preferences.end();
+  }
+  return layout.length() > 0 ? layout : String(kDefaultLayout);
+}
+
+// Remove first: NVS would otherwise need room for old and new blob at once.
+// Only called after layoutCapacity() confirmed the new blob fits.
+bool saveLayout(const uint8_t *data, size_t len) {
+  if (!preferences.begin("tigolayout", false))
+    return false;
+  preferences.remove("layout");
+  bool ok = preferences.putBytes("layout", data, len) == len;
+  preferences.end();
+  return ok;
+}
+
 void addHaSensor(JsonObject cmps, const String &uidBase, const char *key,
                  const char *name, const char *deviceClass, const char *unit,
                  const char *stateClass, bool diagnostic) {
@@ -851,6 +916,69 @@ void setup() {
         } else {
           request->send(400, "text/plain", "Invalid JSON");
         }
+      });
+
+  // Layout endpoints (designer page)
+  server.on("/api/layout", HTTP_GET, [](AsyncWebServerRequest *request) {
+    AsyncWebServerResponse *response =
+        request->beginResponse(200, "application/json", loadLayout());
+    response->addHeader("X-Layout-Max", String(layoutCapacity()));
+    response->addHeader("Cache-Control", "no-store");
+    request->send(response);
+  });
+
+  server.on(
+      "/api/layout", HTTP_POST,
+      [](AsyncWebServerRequest *request) {
+        size_t capacity = layoutCapacity();
+        if (request->contentLength() > capacity) {
+          taskLog.printf("Layout: %u bytes rejected, room for %u bytes\n",
+                         request->contentLength(), capacity);
+          AsyncWebServerResponse *response = request->beginResponse(
+              413, "text/plain",
+              "Layout too large: the device has room for " + String(capacity) +
+                  " bytes");
+          response->addHeader("X-Layout-Max", String(capacity));
+          request->send(response);
+          return;
+        }
+        if (!request->_tempObject) {
+          request->send(400, "text/plain", "Empty body");
+          return;
+        }
+        const uint8_t *data = static_cast<const uint8_t *>(request->_tempObject);
+        size_t len = request->contentLength();
+        JsonDocument doc;
+        if (deserializeJson(doc, data, len) || !doc["el"].is<JsonArray>()) {
+          request->send(400, "text/plain", "Invalid layout JSON");
+          return;
+        }
+        unsigned long started = millis();
+        bool ok = saveLayout(data, len);
+        nvs_stats_t stats = {};
+        nvs_get_stats(NULL, &stats);
+        taskLog.printf("Layout: %s %u bytes in %lu ms, NVS entries left %u, "
+                       "free heap %u\n",
+                       ok ? "saved" : "FAILED to save", len,
+                       millis() - started, stats.available_entries,
+                       ESP.getFreeHeap());
+        if (!ok) {
+          request->send(507, "text/plain",
+                        "The device could not store the layout");
+          return;
+        }
+        request->send(200, "text/plain", "OK");
+      },
+      NULL,
+      [](AsyncWebServerRequest *request, uint8_t *data, size_t len,
+         size_t index, size_t total) {
+        if (total > kLayoutMaxBytes)
+          return;
+        if (index == 0)
+          request->_tempObject = malloc(total);
+        if (request->_tempObject)
+          memcpy(static_cast<uint8_t *>(request->_tempObject) + index, data,
+                 len);
       });
 
   // Reboot endpoint

@@ -26,6 +26,8 @@ Non-intrusively monitors communication between Tigo Cloud Connect Advanced (CCA)
   TigoTell, every module and every TAP appear in Home Assistant as devices with sensors via MQTT discovery.
 - **TAP Status**  
   Tracks each Tigo Access Point on the bus: polls answered, buffer levels, modules heard and their signal, plus barcode, firmware and radio channel when the CCA queries them.
+- **System Layout**  
+  Draw a plan of your installation (panels, rectangles, lines, text), link each panel to its Tigo module and watch live output per panel.
 - **Device Health & Self-Healing**  
   Restart reason, crash reports, memory and WiFi diagnostics; loop watchdog, WiFi reconnect and restart on persistent memory exhaustion.
 - ️**REST APIs**  
@@ -130,6 +132,7 @@ If you wish to upload updates over your local network using PlatformIO:
 Once connected to your local network, you can access the device in your browser via mdns (`http://TigoTell.local`) or its assigned IP address.
 
 - **Settings**: Click the **Cog Icon** on the dashboard to configure Hardware Pins (TX, RX, EN), InfluxDB host/port, MQTT broker, and reporting intervals.
+- **`/layout.html`**: Graphical system layout (also via the grid icon on the dashboard). See below.
 - **`/json`**: Returns a snapshot of all discovered nodes and their latest parsed data, including system stats.
 - **`/version`**: Returns the current firmware version and build timestamp.
 - **`/update`**: Access the ElegantOTA firmware update portal. It is enabled once OTA username and password are set in the settings and the device has been rebooted; until then the page explains this.
@@ -137,7 +140,7 @@ Once connected to your local network, you can access the device in your browser 
 
 ### Barcodes
 
-Barcodes are shown in Tigo's label format (e.g. `4-EF82C4J`, as printed on the optimizer and shown in the Tigo app) on the power cards, in the registry, MQTT and Home Assistant; `/json` additionally lists the raw 64-bit `long_address`. The CCA's node table marks module IDs with bit 0x8000 while power reports use the plain ID; TigoTell strips the bit so both match. The module-ID-to-barcode map is kept in NVS, because the CCA only sends its node table occasionally (mostly while modules are being added).
+Barcodes are shown in Tigo's label format (e.g. `4-EF82C4J`, as printed on the optimizer and shown in the Tigo app) on the power cards, in the registry, the layout editor, MQTT and Home Assistant; `/json` additionally lists the raw 64-bit `long_address`. The CCA's node table marks module IDs with bit 0x8000 while power reports use the plain ID; TigoTell strips the bit so both match. The module-ID-to-barcode map is kept in NVS, because the CCA only sends its node table occasionally (mostly while modules are being added).
 
 ### Device health
 
@@ -157,6 +160,14 @@ The dashboard's **Gateways (TAP)** section lists every TAP the CCA talks to, key
 - **Barcode, firmware, radio channel/PAN**: only exchanged when the CCA enumerates the TAPs (typically when the CCA starts), so they appear after the CCA restarts.
 
 `/json` contains the same data under `taps`, and each power entry names the TAP it came through (`gateway`). Over MQTT each TAP is published to `tigotell/tap/<id>`, and Home Assistant discovery adds a device per TAP (connection, polls answered, modules, buffers, missed polls). Protocol details follow [taptap's documentation](https://github.com/willglynn/taptap/blob/main/docs/protocol.md).
+
+### System Layout
+
+Open `/layout.html` (or the grid icon on the dashboard) and click **Edit**. Tools: panel, row of panels, rectangle, line and text. Drag empty space to pan, scroll or pinch to zoom, Shift-drag to select several elements; Delete, Ctrl+Z/Ctrl+Shift+Z, Ctrl+D and the arrow keys work as expected.
+
+To link panels and modules, open the **Modules** tab, pick a module (its barcode matches the optimizer label) and tap its panel, or drag the module onto the panel. Texts and rectangle labels can show live values via placeholders such as `{total_power}`, `{node:12.temperature}` or, in rectangle labels, `{group.power}` (sum of the panels inside). **Strings**: in the editor's Strings tab, create strings and pick their panels (tap, or swipe across several), or select panels and set the string under Properties. Panels show their string as a colored frame; the view lists each string with power, voltage (sum of module output voltages) and reporting panels, and tapping a string highlights it. Placeholders: `{string:1.power}`, `{string:1.voltage}`, `{string:1.active}`, `{string:1.count}`. The view colors panels by power, voltage, current, temperature or RSSI, or by string. Text elements can be rotated. **Simulate** in the editor fills all panels (linked or not) with made-up data and a sunlight slider to preview the live look; simulated data is never saved.
+
+The layout is stored in the device's settings storage (NVS), so filesystem updates keep it. NVS is shared with WiFi and settings, so the layout gets up to 8 KB of what is free while a reserve is kept for the rest; the editor shows the room available. Each save is read back to confirm it, and WebSerial logs size, duration and remaining space. Use **Export** to keep a backup, e.g. before a factory flash.
 
 ### MQTT
 
