@@ -15,6 +15,7 @@
 
 #include "Health.h"
 #include "RepoInfo.h"
+#include "MqttPublisher.h"
 #include "TaskLog.h"
 #include "PowerStatsAccumulator.h"
 #include "TigoProtocol.h"
@@ -29,6 +30,7 @@ constexpr size_t kRxBufferSize = 1024;
 
 AsyncUDP udp;
 TigoParser parser;
+MqttPublisher mqtt;
 
 struct Config {
   String hostname = "TigoTell";
@@ -43,6 +45,13 @@ struct Config {
   int minSecondsNodeTableUpdates = 60;
   String otaUser = "...";
   String otaPass = "...";
+  String mqttHost = "";
+  uint16_t mqttPort = 1883;
+  String mqttUser = "";
+  String mqttPass = "";
+  String mqttTopic = "tigotell";
+  int mqttInterval = 30;
+  bool mqttDiscovery = true;
 };
 
 Config appConfig;
@@ -69,6 +78,15 @@ void loadSettings() {
       preferences.getInt("tableUpd", appConfig.minSecondsNodeTableUpdates);
   appConfig.otaUser = preferences.getString("otaUser", appConfig.otaUser);
   appConfig.otaPass = preferences.getString("otaPass", appConfig.otaPass);
+  appConfig.mqttHost = preferences.getString("mqttHost", appConfig.mqttHost);
+  appConfig.mqttPort = preferences.getUShort("mqttPort", appConfig.mqttPort);
+  appConfig.mqttUser = preferences.getString("mqttUser", appConfig.mqttUser);
+  appConfig.mqttPass = preferences.getString("mqttPass", appConfig.mqttPass);
+  appConfig.mqttTopic = preferences.getString("mqttTopic", appConfig.mqttTopic);
+  appConfig.mqttInterval =
+      preferences.getInt("mqttIntv", appConfig.mqttInterval);
+  appConfig.mqttDiscovery =
+      preferences.getBool("mqttHaDisc", appConfig.mqttDiscovery);
   preferences.end();
 }
 
@@ -86,6 +104,13 @@ void saveSettings() {
   preferences.putInt("tableUpd", appConfig.minSecondsNodeTableUpdates);
   preferences.putString("otaUser", appConfig.otaUser);
   preferences.putString("otaPass", appConfig.otaPass);
+  preferences.putString("mqttHost", appConfig.mqttHost);
+  preferences.putUShort("mqttPort", appConfig.mqttPort);
+  preferences.putString("mqttUser", appConfig.mqttUser);
+  preferences.putString("mqttPass", appConfig.mqttPass);
+  preferences.putString("mqttTopic", appConfig.mqttTopic);
+  preferences.putInt("mqttIntv", appConfig.mqttInterval);
+  preferences.putBool("mqttHaDisc", appConfig.mqttDiscovery);
   preferences.end();
 }
 
@@ -97,6 +122,21 @@ void sendUdpPayload(const std::string &payload) {
   udp.writeTo(reinterpret_cast<const uint8_t *>(payload.c_str()),
               payload.length(), appConfig.influxHost.c_str(),
               appConfig.influxPort);
+}
+
+void applyMqttSettings() {
+  MqttPublisher::Settings s;
+  s.host = appConfig.mqttHost;
+  s.port = appConfig.mqttPort;
+  s.user = appConfig.mqttUser;
+  s.pass = appConfig.mqttPass;
+  s.baseTopic = appConfig.mqttTopic;
+  uint8_t mac[6];
+  WiFi.macAddress(mac);
+  char suffix[8];
+  snprintf(suffix, sizeof(suffix), "-%02x%02x%02x", mac[3], mac[4], mac[5]);
+  s.clientId = appConfig.hostname + suffix;
+  mqtt.configure(s);
 }
 
 volatile bool isUpdatingOTA = false;
@@ -183,6 +223,19 @@ AsyncWebServer server(80);
 NetWizard netWizard(&server);
 
 unsigned long lastStatsTime = 0;
+unsigned long lastMqttTime = 0;
+
+// Nodes without a power frame for this long are not published (matches the
+// dashboard's stale threshold).
+constexpr uint64_t kMqttStaleMs = 60000;
+
+// Home Assistant discovery state.
+String haDeviceId; // "tigotell_<last 3 MAC bytes>", set in setup()
+uint32_t lastDiscoveryGen = 0;
+// Discovered nodes; value = whether the barcode was known at the time, so the
+// config is re-sent once the barcode shows up.
+std::map<uint16_t, bool> discoveredNodes;
+std::map<uint16_t, bool> discoveredTaps; // value: barcode was known
 
 // A TAP that sent nothing for this long counts as offline.
 constexpr uint32_t kTapOfflineMs = 60000;
@@ -339,6 +392,228 @@ std::mutex dataMutex;
 std::map<uint16_t, PowerStatsAccumulator> nodeAccumulators;
 bool isElegantOtaStarted = false;
 
+void addHaSensor(JsonObject cmps, const String &uidBase, const char *key,
+                 const char *name, const char *deviceClass, const char *unit,
+                 const char *stateClass, bool diagnostic) {
+  String uid = uidBase + "_" + key;
+  JsonObject c = cmps[uid].to<JsonObject>();
+  c["p"] = "sensor";
+  c["name"] = name;
+  c["uniq_id"] = uid;
+  c["val_tpl"] = String("{{ value_json.") + key + " }}";
+  if (deviceClass)
+    c["dev_cla"] = deviceClass;
+  if (unit)
+    c["unit_of_meas"] = unit;
+  if (stateClass)
+    c["stat_cla"] = stateClass;
+  if (diagnostic)
+    c["ent_cat"] = "diagnostic";
+}
+
+// Fills the parts shared by all discovery messages and sends it retained.
+void sendHaDiscovery(JsonDocument &doc, const String &objectId,
+                     const String &stateSubTopic) {
+  JsonObject origin = doc["o"].to<JsonObject>();
+  origin["name"] = "TigoTell";
+  origin["sw"] = VERSION;
+  origin["url"] = TIGOTELL_REPO_URL;
+  doc["stat_t"] = appConfig.mqttTopic + "/" + stateSubTopic;
+  doc["avty_t"] = appConfig.mqttTopic + "/status";
+  // Values without update for this long show as unavailable in HA.
+  doc["exp_aft"] = 3 * appConfig.mqttInterval + 60;
+
+  String payload;
+  serializeJson(doc, payload);
+  mqtt.enqueueAbsolute("homeassistant/device/" + objectId + "/config", payload,
+                       true);
+}
+
+void publishHaSystemDiscovery() {
+  JsonDocument doc;
+  JsonObject dev = doc["dev"].to<JsonObject>();
+  dev["ids"] = haDeviceId;
+  dev["name"] = appConfig.hostname;
+  dev["mdl"] = "TigoTell";
+  dev["sw"] = VERSION;
+  dev["cu"] = "http://" + WiFi.localIP().toString() + "/";
+
+  JsonObject cmps = doc["cmps"].to<JsonObject>();
+  addHaSensor(cmps, haDeviceId, "total_power", "Total power", "power", "W",
+              "measurement", false);
+  addHaSensor(cmps, haDeviceId, "active_nodes", "Active modules", nullptr,
+              nullptr, "measurement", false);
+  addHaSensor(cmps, haDeviceId, "known_nodes", "Known modules", nullptr,
+              nullptr, "measurement", true);
+  addHaSensor(cmps, haDeviceId, "crc_errors", "CRC errors", nullptr, nullptr,
+              "total_increasing", true);
+  addHaSensor(cmps, haDeviceId, "total_frames", "Frames", nullptr, nullptr,
+              "total_increasing", true);
+  addHaSensor(cmps, haDeviceId, "uptime_s", "Uptime", "duration", "s",
+              nullptr, true);
+
+  sendHaDiscovery(doc, haDeviceId, "stats");
+}
+
+void publishHaNodeDiscovery(uint16_t nodeId, const std::string &barcode) {
+  String uidBase = haDeviceId + "_node_" + String(nodeId);
+  JsonDocument doc;
+  JsonObject dev = doc["dev"].to<JsonObject>();
+  dev["ids"] = uidBase;
+  dev["name"] = "Tigo Module " + String(nodeId);
+  dev["mf"] = "Tigo";
+  dev["mdl"] = "PV module optimizer";
+  if (!barcode.empty())
+    dev["sn"] = barcode.c_str();
+  dev["via_device"] = haDeviceId;
+
+  JsonObject cmps = doc["cmps"].to<JsonObject>();
+  addHaSensor(cmps, uidBase, "power", "Power", "power", "W", "measurement",
+              false);
+  addHaSensor(cmps, uidBase, "voltage_in", "Voltage in", "voltage", "V",
+              "measurement", false);
+  addHaSensor(cmps, uidBase, "voltage_out", "Voltage out", "voltage", "V",
+              "measurement", false);
+  addHaSensor(cmps, uidBase, "current_in", "Current", "current", "A",
+              "measurement", false);
+  addHaSensor(cmps, uidBase, "temperature", "Temperature", "temperature",
+              "°C", "measurement", false);
+  addHaSensor(cmps, uidBase, "duty_cycle", "Duty cycle", nullptr, nullptr,
+              "measurement", true);
+  addHaSensor(cmps, uidBase, "rssi", "RSSI", "signal_strength", "dBm",
+              "measurement", true);
+
+  sendHaDiscovery(doc, uidBase, "node/" + String(nodeId));
+}
+
+void publishHaTapDiscovery(uint16_t id) {
+  String hex = tapHexId(id);
+  String uidBase = haDeviceId + "_tap_" + hex;
+  JsonDocument doc;
+  JsonObject dev = doc["dev"].to<JsonObject>();
+  dev["ids"] = uidBase;
+  dev["name"] = "Tigo TAP " + hex;
+  dev["mf"] = "Tigo";
+  dev["mdl"] = "TAP (Access Point)";
+  auto bc = parser.getGatewayBarcodes().find(id);
+  if (bc != parser.getGatewayBarcodes().end())
+    dev["sn"] = bc->second.c_str();
+  dev["via_device"] = haDeviceId;
+
+  JsonObject cmps = doc["cmps"].to<JsonObject>();
+  JsonObject online = cmps[uidBase + "_online"].to<JsonObject>();
+  online["p"] = "binary_sensor";
+  online["name"] = "Connection";
+  online["uniq_id"] = uidBase + "_online";
+  online["dev_cla"] = "connectivity";
+  online["val_tpl"] = "{{ 'OFF' if value_json.state == 'offline' else 'ON' }}";
+  addHaSensor(cmps, uidBase, "recent_answered_pct", "Polls answered", nullptr,
+              "%", "measurement", false);
+  addHaSensor(cmps, uidBase, "modules", "Modules", nullptr, nullptr,
+              "measurement", false);
+  addHaSensor(cmps, uidBase, "rssi_avg", "Average module signal", nullptr,
+              nullptr, "measurement", true);
+  addHaSensor(cmps, uidBase, "rx_buffers_used", "Receive buffers used",
+              nullptr, nullptr, "measurement", true);
+  addHaSensor(cmps, uidBase, "tx_buffers_free", "Transmit buffers free",
+              nullptr, nullptr, "measurement", true);
+  addHaSensor(cmps, uidBase, "missed", "Missed polls", nullptr, nullptr,
+              "total_increasing", true);
+
+  sendHaDiscovery(doc, uidBase, "tap/" + hex);
+}
+
+void publishMqtt() {
+  std::lock_guard<std::mutex> lock(dataMutex);
+  uint64_t now = esp_timer_get_time() / 1000;
+
+  bool discovery = appConfig.mqttDiscovery;
+  if (discovery && mqtt.discoveryGeneration() != lastDiscoveryGen) {
+    lastDiscoveryGen = mqtt.discoveryGeneration();
+    discoveredNodes.clear();
+    discoveredTaps.clear();
+    publishHaSystemDiscovery();
+  }
+  float totalPower = 0;
+  int activeNodes = 0;
+
+  for (auto const &[key, val] : nodePowerData) {
+    if (now - val.last_updated > kMqttStaleMs)
+      continue;
+    const auto &frame = val.frame;
+    float power = frame->voltage_out * frame->current_in;
+    totalPower += power;
+    activeNodes++;
+
+    JsonDocument doc;
+    doc["pv_node_id"] = frame->pv_node_id;
+    doc["address"] = frame->address;
+    auto info = persistentNodeTable.find(frame->pv_node_id);
+    std::string barcode;
+    if (info != persistentNodeTable.end())
+      barcode = info->second.barcode;
+    if (!barcode.empty())
+      doc["barcode"] = barcode.c_str();
+
+    if (discovery) {
+      auto known = discoveredNodes.find(frame->pv_node_id);
+      if (known == discoveredNodes.end() ||
+          (!known->second && !barcode.empty())) {
+        publishHaNodeDiscovery(frame->pv_node_id, barcode);
+        discoveredNodes[frame->pv_node_id] = !barcode.empty();
+      }
+    }
+    doc["power"] = power;
+    doc["voltage_in"] = frame->voltage_in;
+    doc["voltage_out"] = frame->voltage_out;
+    doc["current_in"] = frame->current_in;
+    doc["temperature"] = frame->temperature;
+    doc["duty_cycle"] = frame->duty_cycle;
+    doc["rssi"] = frame->rssi;
+    doc["age_s"] = (now - val.last_updated) / 1000;
+
+    String payload;
+    serializeJson(doc, payload);
+    mqtt.enqueue("node/" + String(frame->pv_node_id), payload);
+  }
+
+  const auto &stats = parser.getStatistics();
+  JsonDocument doc;
+  doc["total_power"] = totalPower;
+  doc["active_nodes"] = activeNodes;
+  doc["known_nodes"] = persistentNodeTable.size();
+  doc["total_frames"] = stats.totalPhysicalFrames;
+  doc["crc_errors"] = stats.crcErrors;
+  doc["power_count"] = stats.powerDataCount;
+  doc["announce_count"] = stats.announceCount;
+  doc["nodetable_count"] = stats.nodeTableCount;
+  doc["uptime_s"] = now / 1000;
+  doc["version"] = VERSION;
+
+  String payload;
+  serializeJson(doc, payload);
+  mqtt.enqueue("stats", payload);
+
+  uint32_t nowMs = millis();
+  for (auto const &[id, gw] : parser.getGateways()) {
+    if (!gw.seen && gw.polls == 0)
+      continue;
+    if (discovery) {
+      bool hasBarcode = parser.getGatewayBarcodes().count(id) > 0;
+      auto known = discoveredTaps.find(id);
+      if (known == discoveredTaps.end() || (!known->second && hasBarcode)) {
+        publishHaTapDiscovery(id);
+        discoveredTaps[id] = hasBarcode;
+      }
+    }
+    JsonDocument tapDoc;
+    tapToJson(tapDoc.to<JsonObject>(), gw, nowMs);
+    String tapPayload;
+    serializeJson(tapDoc, tapPayload);
+    mqtt.enqueue("tap/" + tapHexId(id), tapPayload);
+  }
+}
+
 void setup() {
   health::begin();
   loadSettings();
@@ -382,6 +657,17 @@ void setup() {
   // Setup WebSerial
   WebSerial.begin(&server);
 
+  // MQTT (runs in its own task)
+  {
+    uint8_t mac[6];
+    WiFi.macAddress(mac);
+    char id[24];
+    snprintf(id, sizeof(id), "tigotell_%02x%02x%02x", mac[3], mac[4], mac[5]);
+    haDeviceId = id;
+  }
+  mqtt.begin();
+  applyMqttSettings();
+
   // JSON Dump endpoint
   server.on("/json", HTTP_GET, [](AsyncWebServerRequest *request) {
     JsonDocument doc;
@@ -411,6 +697,11 @@ void setup() {
       nvs_stats_t nvsStats = {};
       if (nvs_get_stats(NULL, &nvsStats) == ESP_OK)
         jsonSys["nvs_free_entries"] = nvsStats.available_entries;
+
+      JsonObject jsonMqtt = root["mqtt"].to<JsonObject>();
+      jsonMqtt["enabled"] = mqtt.isEnabled();
+      jsonMqtt["connected"] = mqtt.isConnected();
+      jsonMqtt["published"] = mqtt.publishedCount();
 
       // Power Data (Latest Metrics)
       JsonArray powerNodes = root["power"].to<JsonArray>();
@@ -477,6 +768,12 @@ void setup() {
     doc["measurementName"] = appConfig.measurementName;
     doc["minSecondsNodeUpdates"] = appConfig.minSecondsNodeUpdates;
     doc["minSecondsNodeTableUpdates"] = appConfig.minSecondsNodeTableUpdates;
+    doc["mqttHost"] = appConfig.mqttHost;
+    doc["mqttPort"] = appConfig.mqttPort;
+    doc["mqttUser"] = appConfig.mqttUser;
+    doc["mqttTopic"] = appConfig.mqttTopic;
+    doc["mqttInterval"] = appConfig.mqttInterval;
+    doc["mqttDiscovery"] = appConfig.mqttDiscovery;
     doc["otaEnabled"] = isElegantOtaStarted;
 
     AsyncResponseStream *response =
@@ -524,8 +821,32 @@ void setup() {
             if (val.length() > 0)
               appConfig.otaPass = val;
           }
+          if (doc["mqttHost"].is<const char *>())
+            appConfig.mqttHost = doc["mqttHost"].as<String>();
+          if (doc["mqttPort"].is<int>())
+            appConfig.mqttPort = doc["mqttPort"];
+          if (doc["mqttUser"].is<const char *>())
+            appConfig.mqttUser = doc["mqttUser"].as<String>();
+          if (doc["mqttPass"].is<const char *>()) {
+            String val = doc["mqttPass"].as<String>();
+            if (val.length() > 0)
+              appConfig.mqttPass = val;
+          }
+          if (doc["mqttTopic"].is<const char *>()) {
+            String val = doc["mqttTopic"].as<String>();
+            val.trim();
+            while (val.endsWith("/"))
+              val.remove(val.length() - 1);
+            if (val.length() > 0)
+              appConfig.mqttTopic = val;
+          }
+          if (doc["mqttInterval"].is<int>())
+            appConfig.mqttInterval = max(1, doc["mqttInterval"].as<int>());
+          if (doc["mqttDiscovery"].is<bool>())
+            appConfig.mqttDiscovery = doc["mqttDiscovery"];
 
           saveSettings();
+          applyMqttSettings();
           request->send(200, "text/plain", "OK");
         } else {
           request->send(400, "text/plain", "Invalid JSON");
@@ -821,5 +1142,13 @@ void loop() {
 
     WebSerial.print("Sent Stats: ");
     WebSerial.println(statsLine.c_str());
+  }
+
+  // Publish data points to MQTT periodically
+  if (mqtt.isConnected() &&
+      millis() - lastMqttTime >
+          static_cast<unsigned long>(appConfig.mqttInterval) * 1000) {
+    lastMqttTime = millis();
+    publishMqtt();
   }
 }

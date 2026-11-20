@@ -20,6 +20,10 @@ Non-intrusively monitors communication between Tigo Cloud Connect Advanced (CCA)
   Configure hardware pins, InfluxDB details, and reporting intervals via Web UI.
 - **InfluxDB Integration**  
   Streams parsed telemetry directly to an InfluxDB instance over UDP line-protocol.
+- **MQTT Publishing**  
+  Periodically publishes per-module data points and system stats as JSON to an MQTT broker.
+- **Home Assistant Discovery**  
+  TigoTell, every module and every TAP appear in Home Assistant as devices with sensors via MQTT discovery.
 - **TAP Status**  
   Tracks each Tigo Access Point on the bus: polls answered, buffer levels, modules heard and their signal, plus barcode, firmware and radio channel when the CCA queries them.
 - **Device Health & Self-Healing**  
@@ -125,7 +129,7 @@ If you wish to upload updates over your local network using PlatformIO:
 
 Once connected to your local network, you can access the device in your browser via mdns (`http://TigoTell.local`) or its assigned IP address.
 
-- **Settings**: Click the **Cog Icon** on the dashboard to configure Hardware Pins (TX, RX, EN), InfluxDB host/port, and reporting intervals.
+- **Settings**: Click the **Cog Icon** on the dashboard to configure Hardware Pins (TX, RX, EN), InfluxDB host/port, MQTT broker, and reporting intervals.
 - **`/json`**: Returns a snapshot of all discovered nodes and their latest parsed data, including system stats.
 - **`/version`**: Returns the current firmware version and build timestamp.
 - **`/update`**: Access the ElegantOTA firmware update portal. It is enabled once OTA username and password are set in the settings and the device has been rebooted; until then the page explains this.
@@ -133,7 +137,7 @@ Once connected to your local network, you can access the device in your browser 
 
 ### Barcodes
 
-Barcodes are shown in Tigo's label format (e.g. `4-EF82C4J`, as printed on the optimizer and shown in the Tigo app) on the power cards and in the registry; `/json` additionally lists the raw 64-bit `long_address`. The CCA's node table marks module IDs with bit 0x8000 while power reports use the plain ID; TigoTell strips the bit so both match. The module-ID-to-barcode map is kept in NVS, because the CCA only sends its node table occasionally (mostly while modules are being added).
+Barcodes are shown in Tigo's label format (e.g. `4-EF82C4J`, as printed on the optimizer and shown in the Tigo app) on the power cards, in the registry, MQTT and Home Assistant; `/json` additionally lists the raw 64-bit `long_address`. The CCA's node table marks module IDs with bit 0x8000 while power reports use the plain ID; TigoTell strips the bit so both match. The module-ID-to-barcode map is kept in NVS, because the CCA only sends its node table occasionally (mostly while modules are being added).
 
 ### Device health
 
@@ -152,11 +156,27 @@ The dashboard's **Gateways (TAP)** section lists every TAP the CCA talks to, key
 - **Modules / Avg. module signal**: modules whose reports arrived through this TAP in the last 5 minutes, and their raw RSSI values.
 - **Barcode, firmware, radio channel/PAN**: only exchanged when the CCA enumerates the TAPs (typically when the CCA starts), so they appear after the CCA restarts.
 
-`/json` contains the same data under `taps`, and each power entry names the TAP it came through (`gateway`). Protocol details follow [taptap's documentation](https://github.com/willglynn/taptap/blob/main/docs/protocol.md).
+`/json` contains the same data under `taps`, and each power entry names the TAP it came through (`gateway`). Over MQTT each TAP is published to `tigotell/tap/<id>`, and Home Assistant discovery adds a device per TAP (connection, polls answered, modules, buffers, missed polls). Protocol details follow [taptap's documentation](https://github.com/willglynn/taptap/blob/main/docs/protocol.md).
 
-### Home Assistant
+### MQTT
 
-[miketkf/ha-tigotell](https://github.com/miketkf/ha-tigotell) provides an integration to connect your TigoTell to Home Assistant.
+Set the broker host (and optionally port, username/password, base topic and publish interval) in the **MQTT Publishing** section of the settings page. Changes take effect immediately; leave the broker empty to disable MQTT. A green/red **MQTT** pill on the dashboard shows the connection state.
+
+Every publish interval, TigoTell sends (base topic defaults to `tigotell`):
+
+| Topic | Payload |
+| --- | --- |
+| `tigotell/node/<pv_node_id>` | `{"pv_node_id","address","barcode","power","voltage_in","voltage_out","current_in","temperature","duty_cycle","rssi","age_s"}` for each module heard from within the last 60 s |
+| `tigotell/stats` | `{"total_power","active_nodes","known_nodes","total_frames","crc_errors","power_count","announce_count","nodetable_count","uptime_s","version"}` |
+| `tigotell/status` | `online` / `offline` (retained, Last Will) |
+
+Units: W, V, A, °C, dBm. Values are the latest reading per module (as on the dashboard), not interval averages.
+
+#### Home Assistant
+
+With **Home Assistant Discovery** enabled (default), TigoTell announces itself and every module as Home Assistant devices with sensors (power, voltages, current, temperature, plus diagnostic duty cycle/RSSI; total power, active modules, CRC errors and uptime for TigoTell itself). Configs are sent retained to `homeassistant/device/<id>/config` using device-based discovery (Home Assistant 2024.11+), and re-sent whenever Home Assistant restarts. Module sensors become unavailable when a module stops reporting (e.g. at night). For the Energy dashboard, add an *Integral* helper on a power sensor.
+
+Alternatively, [miketkf/ha-tigotell](https://github.com/miketkf/ha-tigotell) provides a separate Home Assistant integration for TigoTell.
 
 ## 🙏 Credits & Acknowledgments
 

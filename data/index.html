@@ -357,6 +357,7 @@
           <div id="status-dot" class="status-dot"></div>
           <span id="status-text">Loading...</span>
         </div>
+        <div id="mqtt-badge" class="header-pill" style="display: none; cursor: default;">MQTT</div>
         <a id="update-available-badge" class="header-pill">Update
           Available</a>
         <a id="update-check-btn" class="header-pill" title="Check for updates">
@@ -543,6 +544,18 @@
           if (data.build_timestamp) {
             document.getElementById('build-version').title = `Build: ${data.build_timestamp}`;
           }
+        }
+
+        // Update MQTT status
+        const mqttBadge = document.getElementById('mqtt-badge');
+        if (data.mqtt && data.mqtt.enabled) {
+          mqttBadge.style.display = 'flex';
+          mqttBadge.className = 'header-pill ' + (data.mqtt.connected ? 'status-live' : 'status-disconnected');
+          mqttBadge.title = data.mqtt.connected
+            ? `MQTT connected – ${data.mqtt.published.toLocaleString()} messages published`
+            : 'MQTT broker not connected';
+        } else {
+          mqttBadge.style.display = 'none';
         }
 
         // Update Stats
