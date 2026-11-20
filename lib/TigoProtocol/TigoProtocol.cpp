@@ -313,6 +313,102 @@ std::string tigoBarcodeFromHex(const std::string &hex) {
   return tigoBarcode(bytes);
 }
 
+int TigoGatewayStatus::recentAnsweredPercent() const {
+  if (recentCount == 0)
+    return -1;
+  uint64_t mask = recentCount >= 64 ? ~0ULL : ((1ULL << recentCount) - 1);
+  return __builtin_popcountll(recentBits & mask) * 100 / recentCount;
+}
+
+namespace {
+void recordPoll(TigoGatewayStatus &gw, bool answered) {
+  gw.recentBits = (gw.recentBits << 1) | (answered ? 1 : 0);
+  if (gw.recentCount < 64)
+    gw.recentCount++;
+}
+} // namespace
+
+// Gateway frame layout: address (2), type (2), payload. The address carries
+// the gateway ID; bit 0x8000 is set on frames sent by the gateway.
+void TigoParser::trackGateway(const std::vector<uint8_t> &payload) {
+  uint16_t address = (payload[0] << 8) | payload[1];
+  uint16_t type = (payload[2] << 8) | payload[3];
+  bool fromGateway = address & 0x8000;
+  uint16_t id = address & 0x7FFF;
+
+  // Assign gateway ID request: the CCA tells a TAP (by long address) its ID.
+  if (type == 0x003C && !fromGateway && payload.size() >= 18) {
+    uint16_t newId = (payload[16] << 8) | payload[17];
+    gatewayBarcodes[newId] = tigoBarcode(&payload[8]);
+    return;
+  }
+
+  // Only traffic at a gateway's regular ID; enumeration uses temporary IDs.
+  switch (type) {
+  case 0x0148: case 0x0149: // receive request/response
+  case 0x0B0F: case 0x0B10: // command request/response
+  case 0x0B00: case 0x0B01: // ping request/response
+  case 0x003A: case 0x003B: // identify request/response
+  case 0x000A: case 0x000B: // version request/response
+    break;
+  default:
+    return;
+  }
+  if (id == 0)
+    return;
+
+  TigoGatewayStatus &gw = gateways[id];
+  gw.id = id;
+  if (fromGateway) {
+    gw.seen = true;
+    gw.lastSeenMs = nowMs;
+  }
+
+  switch (type) {
+  case 0x0148:
+    if (gw.awaiting) {
+      gw.missed++;
+      recordPoll(gw, false);
+    }
+    gw.polls++;
+    gw.awaiting = true;
+    break;
+  case 0x0149:
+    if (gw.awaiting) {
+      gw.answered++;
+      recordPoll(gw, true);
+      gw.awaiting = false;
+    }
+    break;
+  case 0x0B10:
+    gw.commands++;
+    if (payload.size() >= 6)
+      gw.txBuffersFree = payload[5];
+    // Gateway radio configuration response (PV packet type 0E).
+    if (payload.size() >= 13 && payload[7] == 0x0E) {
+      gw.radioChannel = payload[10];
+      gw.panId = (payload[11] << 8) | payload[12];
+    }
+    break;
+  case 0x003B: // identify response: long address, gateway ID
+    if (payload.size() >= 12)
+      gatewayBarcodes[id] = tigoBarcode(&payload[4]);
+    break;
+  case 0x000B: { // version response: text with CR separators
+    std::string v(payload.begin() + 4, payload.end());
+    for (char &c : v)
+      if (c == '\r' || c == '\n')
+        c = ' ';
+    while (!v.empty() && v.back() == ' ')
+      v.pop_back();
+    gw.version = v.substr(0, 120);
+    break;
+  }
+  default:
+    break;
+  }
+}
+
 void TigoParser::processFrame(const std::vector<uint8_t> &frame) {
   if (!verifyCRC(frame)) {
     if (ignoreFirstCrcError) {
@@ -332,14 +428,18 @@ void TigoParser::processFrame(const std::vector<uint8_t> &frame) {
   if (payload.size() < 4)
     return;
 
+  trackGateway(payload);
+
   if (payload[2] == 0x01 && payload[3] == 0x49) {
-    parseTLVPayload(payload);
+    auto gw = gateways.find(((payload[0] << 8) | payload[1]) & 0x7FFF);
+    parseTLVPayload(payload, gw != gateways.end() ? &gw->second : nullptr);
   } else if (payload[2] == 0x0B && (payload[3] == 0x10 || payload[3] == 0x0F)) {
     parseManagementPayload(payload);
   }
 }
 
-void TigoParser::parseTLVPayload(const std::vector<uint8_t> &payload) {
+void TigoParser::parseTLVPayload(const std::vector<uint8_t> &payload,
+                                 TigoGatewayStatus *gw) {
   // Header parsing logic based on reference `calculateHeaderLength`
   // Payload indices:
   // 0-1: Unknown
@@ -384,6 +484,24 @@ void TigoParser::parseTLVPayload(const std::vector<uint8_t> &payload) {
   // headerLen.
 
   size_t pos = 4 + headerLen;
+  if (pos > payload.size())
+    return;
+
+  // Optional status fields, in order, right after the status word.
+  if (gw) {
+    size_t f = 6;
+    if ((status & 0x01) == 0) {
+      gw->rxBuffersUsed = payload[f++];
+      gw->rxBuffersMax = std::max(gw->rxBuffersMax, gw->rxBuffersUsed);
+    }
+    if ((status & 0x02) == 0) {
+      gw->txBuffersFree = payload[f++];
+      gw->txBuffersMin = gw->txBuffersMin < 0
+                             ? gw->txBuffersFree
+                             : std::min(gw->txBuffersMin, gw->txBuffersFree);
+    }
+    gw->slotCounter = (payload[pos - 2] << 8) | payload[pos - 1];
+  }
 
   while (pos < payload.size()) {
     if (pos + 7 > payload.size())
@@ -400,6 +518,15 @@ void TigoParser::parseTLVPayload(const std::vector<uint8_t> &payload) {
 
     if (pos + packetTotalSize > payload.size())
       break;
+
+    if (gw) {
+      gw->packets++;
+      // Gateway radio configuration response (PV packet type 0E).
+      if (type == 0x0E && len >= 4) {
+        gw->radioChannel = payload[pos + 8];
+        gw->panId = (payload[pos + 9] << 8) | payload[pos + 10];
+      }
+    }
 
     if (type == 0x31) { // Power Frame
       stats.powerDataCount++;
@@ -447,8 +574,14 @@ void TigoParser::parseTLVPayload(const std::vector<uint8_t> &payload) {
       // 38/2 = 19.
       int rssi = payload[pos + 19];
 
-      frameQueue.push_back(std::unique_ptr<TigoFrame>(
-          new TigoPowerFrame(addr, node_id, vin, vout, duty, iin, temp, rssi)));
+      auto *frame =
+          new TigoPowerFrame(addr, node_id, vin, vout, duty, iin, temp, rssi);
+      if (gw) {
+        frame->gateway_id = gw->id;
+        gw->powerReports++;
+        gw->nodes[node_id] = {nowMs, rssi};
+      }
+      frameQueue.push_back(std::unique_ptr<TigoFrame>(frame));
     } else if (type == 0x09) { // Announce Frame
       stats.announceCount++;
       // Structure (Standard Header like PowerFrame):
