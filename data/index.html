@@ -244,6 +244,17 @@
       content: 'Updated: ';
     }
 
+    .card-barcode {
+      font-family: monospace;
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: var(--text);
+      margin-left: 0.6rem;
+      padding: 0.1rem 0.4rem;
+      border-radius: 0.25rem;
+      background: rgba(255, 255, 255, 0.07);
+    }
+
     .barcode-fragment {
       font-family: monospace;
     }
@@ -277,6 +288,52 @@
       border-bottom: none;
     }
 
+    .tap-state {
+      font-weight: 600;
+      font-size: 0.75rem;
+      padding: .25rem .5rem;
+      border-radius: .25rem;
+    }
+
+    .tap-state.ok {
+      background: rgba(109, 173, 18, 0.12);
+      color: var(--success);
+    }
+
+    .tap-state.degraded {
+      background: var(--stale-bg);
+      color: var(--warning);
+    }
+
+    .tap-state.offline {
+      background: rgba(239, 68, 68, 0.1);
+      color: var(--danger);
+    }
+
+    .health-alert {
+      padding: 1rem 1.25rem;
+      margin-bottom: 1.5rem;
+      border-color: rgba(234, 179, 8, 0.45);
+      color: var(--warning);
+      font-size: 0.9rem;
+      line-height: 1.5;
+    }
+
+    .health-alert strong {
+      display: block;
+      margin-bottom: 0.25rem;
+    }
+
+    .tap-card .wide {
+      grid-column: 1 / -1;
+    }
+
+    .tap-card .wide .metric-value {
+      font-size: 0.875rem;
+      font-weight: 500;
+      word-break: break-word;
+    }
+
     @media (max-width: 768px) {
       .power-grid {
         grid-template-columns: 1fr;
@@ -300,10 +357,15 @@
           <div id="status-dot" class="status-dot"></div>
           <span id="status-text">Loading...</span>
         </div>
+        <div id="mqtt-badge" class="header-pill" style="display: none; cursor: default;">MQTT</div>
         <a id="update-available-badge" class="header-pill">Update
           Available</a>
         <a id="update-check-btn" class="header-pill" title="Check for updates">
           <img src="images/material-design/upload-network.svg"
+            style="width: 1.25rem; height: 1.25rem; filter: invert(0.8); display: block;">
+        </a>
+        <a href="/layout.html" class="header-pill" title="System layout">
+          <img src="images/layout.svg"
             style="width: 1.25rem; height: 1.25rem; filter: invert(0.8); display: block;">
         </a>
         <a href="/config.html" class="header-pill" title="Settings">
@@ -312,6 +374,8 @@
         </a>
       </div>
     </header>
+
+    <div class="card health-alert" id="health-alert" style="display: none;"></div>
 
     <section>
       <div class="stats-grid">
@@ -373,6 +437,16 @@
       </div>
     </section>
 
+    <section id="tap-section" style="display: none;">
+      <h2>Gateways (TAP)</h2>
+      <div class="power-grid" id="tap-grid"></div>
+    </section>
+    <section id="health-section" style="display: none;">
+      <h2>Device Health</h2>
+      <div class="power-grid">
+        <div class="card power-card tap-card" id="health-card"></div>
+      </div>
+    </section>
     <section>
       <h2>Discovery Registry</h2>
       <div style="overflow-x: auto;">
@@ -426,9 +500,17 @@
       return address.toString(16).toUpperCase().padStart(2, '0');
     }
 
+    let fetching = false;
+
     async function fetchData() {
+      // One request at a time, with a timeout: a request the device never
+      // answers must not block the browser's few connections to it.
+      if (fetching) return;
+      fetching = true;
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 4500);
       try {
-        const response = await fetch('/json');
+        const response = await fetch('/json', { signal: ctrl.signal });
         if (!response.ok) throw new Error('Network response was not ok');
         const data = await response.json();
 
@@ -468,6 +550,18 @@
           }
         }
 
+        // Update MQTT status
+        const mqttBadge = document.getElementById('mqtt-badge');
+        if (data.mqtt && data.mqtt.enabled) {
+          mqttBadge.style.display = 'flex';
+          mqttBadge.className = 'header-pill ' + (data.mqtt.connected ? 'status-live' : 'status-disconnected');
+          mqttBadge.title = data.mqtt.connected
+            ? `MQTT connected – ${data.mqtt.published.toLocaleString()} messages published`
+            : 'MQTT broker not connected';
+        } else {
+          mqttBadge.style.display = 'none';
+        }
+
         // Update Stats
         if (data.stats) {
           document.getElementById('stat-total').innerText = data.stats.total_frames.toLocaleString();
@@ -488,6 +582,7 @@
         // Update Power Grid
         const powerGrid = document.getElementById('power-grid');
         let totalWattage = 0;
+        const barcodeById = new Map((data.nodes || []).filter(n => n.barcode).map(n => [n.pv_node_id, n.barcode]));
         powerGrid.innerHTML = data.power.map(p => {
           const lastUpdated = p.last_updated ? p.last_updated : 0;
           const ageSeconds = (data.uptime_ms - lastUpdated) / 1000;
@@ -505,7 +600,7 @@
           return `
                     <div class="card power-card ${isStale ? 'stale' : ''}">
                         <div class="card-header">
-                            <span class="node-id">${p.pv_node_id}</span>
+                            <span class="node-id">${p.pv_node_id}${barcodeById.has(p.pv_node_id) ? `<span class="card-barcode">${barcodeById.get(p.pv_node_id)}</span>` : ''}</span>
                             <span class="address">${formatAddress(p.address)}</span>
                         </div>
                         <div class="card-body">
@@ -547,6 +642,85 @@
         wattage.innerText = `${totalWattage.toLocaleString([], { maximumFractionDigits: 0 })} W`;
         wattage.style.color = totalWattage > 0 ? 'var(--primary)' : '';
 
+        // Update TAPs
+        const taps = data.taps || [];
+        document.getElementById('tap-section').style.display = taps.length ? '' : 'none';
+        const esc = (v) => String(v).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+        document.getElementById('tap-grid').innerHTML = taps.map(t => {
+          const stateLabel = t.state === 'ok' ? 'Online'
+            : t.state === 'degraded' ? 'Missing polls' : 'Offline';
+          const metric = (label, value, wide) => `
+                            <div class="metric${wide ? ' wide' : ''}">
+                                <span class="metric-label">${label}</span>
+                                <span class="metric-value">${value}</span>
+                            </div>`;
+          const lastSeen = t.last_seen_s === undefined ? 'never'
+            : t.last_seen_s < 2 ? 'just now' : `${t.last_seen_s} s ago`;
+          return `
+                    <div class="card power-card tap-card">
+                        <div class="card-header">
+                            <span class="node-id">TAP ${esc(t.id)}</span>
+                            <span class="tap-state ${esc(t.state)}">${stateLabel}</span>
+                        </div>
+                        <div class="card-body">
+                            ${metric('Polls answered', t.recent_answered_pct === undefined ? '–' : `${t.recent_answered_pct} %`)}
+                            ${metric('Modules', t.modules)}
+                            ${metric('Avg. module signal', t.rssi_avg === undefined ? '–' : `${t.rssi_avg} (min ${t.rssi_min})`)}
+                            ${metric('Last response', lastSeen)}
+                            ${metric('Rx buffers used', t.rx_buffers_used === undefined ? '–' : `${t.rx_buffers_used} (max ${t.rx_buffers_max})`)}
+                            ${metric('Tx buffers free', t.tx_buffers_free === undefined ? '–' : `${t.tx_buffers_free}${t.tx_buffers_min !== undefined ? ` (min ${t.tx_buffers_min})` : ''}`)}
+                            ${metric('Missed polls', `${t.missed.toLocaleString()} of ${t.polls.toLocaleString()}`)}
+                            ${metric('Radio', t.radio_channel === undefined ? '–' : `Ch ${t.radio_channel}, PAN ${esc(t.pan_id)}`)}
+                            ${t.barcode ? metric('Barcode', `<span class="barcode">${esc(t.barcode)}</span>`, true) : ''}
+                            ${t.version ? metric('Firmware', esc(t.version), true) : ''}
+                        </div>
+                    </div>`;
+        }).join('');
+
+        // Update device health
+        const sys = data.system;
+        document.getElementById('health-section').style.display = sys ? '' : 'none';
+        if (sys) {
+          const kb = (b) => b === undefined ? '–' : `${(b / 1024).toFixed(0)} KB`;
+          const dur = (s) => s === undefined ? '–'
+            : s >= 86400 ? `${Math.floor(s / 86400)}d ${Math.floor((s % 86400) / 3600)}h`
+              : s >= 3600 ? `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`
+                : `${Math.floor(s / 60)}m ${s % 60}s`;
+          const m = (label, value, wide) => `
+                <div class="metric${wide ? ' wide' : ''}">
+                  <span class="metric-label">${label}</span>
+                  <span class="metric-value">${value}</span>
+                </div>`;
+          const prev = sys.previous_run;
+          const w = sys.wifi || {};
+          document.getElementById('health-card').innerHTML = `
+              <div class="card-header">
+                <span class="node-id">${esc(data.version || '')}</span>
+                <span class="tap-state ${w.connected ? 'ok' : 'offline'}">${w.connected ? 'WiFi ' + w.rssi + ' dBm' : 'WiFi down'}</span>
+              </div>
+              <div class="card-body">
+                ${m('Last restart', esc(sys.reset_reason), true)}
+                ${prev ? m('Previous run', `${dur(prev.uptime_s)}, lowest free memory ${kb(prev.heap_min)}${prev.restart_cause ? ', ' + esc(prev.restart_cause) : ''}`, true) : ''}
+                ${m('Free memory', `${kb(sys.heap_free)} (min ${kb(sys.heap_min)})`)}
+                ${m('Largest block', `${kb(sys.heap_max_block)} (min ${kb(sys.heap_max_block_min)})`)}
+                ${m('WiFi drops', `${w.disconnects ?? 0}${w.last_disconnect_reason ? ' (last reason ' + w.last_disconnect_reason + ')' : ''}`)}
+                ${m('Connected for', w.connected ? dur(w.connected_s) : '–')}
+                ${sys.crash_count ? m(`Crash reports (${sys.crash_count})`, `<span class="barcode">${esc(sys.last_crash)}</span>`, true) : ''}
+              </div>`;
+
+          const alertEl = document.getElementById('health-alert');
+          const bad = /Crash|watchdog|Brownout|glitch|lockup/i.test(sys.reset_reason || '');
+          const healed = prev && prev.restart_cause;
+          if (bad || healed) {
+            alertEl.style.display = '';
+            alertEl.innerHTML = `<strong>TigoTell restarted ${dur(sys.uptime_s)} ago: ${esc(healed ? prev.restart_cause : sys.reset_reason)}</strong>`
+              + (prev ? `The previous run lasted ${dur(prev.uptime_s)}. ` : '')
+              + 'Details under Device Health below.';
+          } else {
+            alertEl.style.display = 'none';
+          }
+        }
+
         // Update Discovery Table
         const discoveryTable = document.getElementById('discovery-table');
         discoveryTable.innerHTML = data.nodes.map(n => `
@@ -564,6 +738,9 @@
         const statusText = document.getElementById('status-text');
         statusBadge.className = 'header-pill status-disconnected';
         statusText.innerText = 'Disconnected';
+      } finally {
+        clearTimeout(timer);
+        fetching = false;
       }
     }
 

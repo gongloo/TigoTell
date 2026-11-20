@@ -13,18 +13,24 @@
 #include <memory>
 #include <mutex>
 
+#include "Health.h"
+#include "RepoInfo.h"
+#include "MqttPublisher.h"
+#include "TaskLog.h"
 #include "PowerStatsAccumulator.h"
 #include "TigoProtocol.h"
 #include "Version.h"
 #include <GithubReleaseOTA.h>
 #include <Preferences.h>
 #include <esp_wifi.h>
+#include <nvs.h>
 
 // Increase to help prevent overflow (CRC errors result).
 constexpr size_t kRxBufferSize = 1024;
 
 AsyncUDP udp;
 TigoParser parser;
+MqttPublisher mqtt;
 
 struct Config {
   String hostname = "TigoTell";
@@ -39,6 +45,13 @@ struct Config {
   int minSecondsNodeTableUpdates = 60;
   String otaUser = "...";
   String otaPass = "...";
+  String mqttHost = "";
+  uint16_t mqttPort = 1883;
+  String mqttUser = "";
+  String mqttPass = "";
+  String mqttTopic = "tigotell";
+  int mqttInterval = 30;
+  bool mqttDiscovery = true;
 };
 
 Config appConfig;
@@ -65,6 +78,15 @@ void loadSettings() {
       preferences.getInt("tableUpd", appConfig.minSecondsNodeTableUpdates);
   appConfig.otaUser = preferences.getString("otaUser", appConfig.otaUser);
   appConfig.otaPass = preferences.getString("otaPass", appConfig.otaPass);
+  appConfig.mqttHost = preferences.getString("mqttHost", appConfig.mqttHost);
+  appConfig.mqttPort = preferences.getUShort("mqttPort", appConfig.mqttPort);
+  appConfig.mqttUser = preferences.getString("mqttUser", appConfig.mqttUser);
+  appConfig.mqttPass = preferences.getString("mqttPass", appConfig.mqttPass);
+  appConfig.mqttTopic = preferences.getString("mqttTopic", appConfig.mqttTopic);
+  appConfig.mqttInterval =
+      preferences.getInt("mqttIntv", appConfig.mqttInterval);
+  appConfig.mqttDiscovery =
+      preferences.getBool("mqttHaDisc", appConfig.mqttDiscovery);
   preferences.end();
 }
 
@@ -82,6 +104,13 @@ void saveSettings() {
   preferences.putInt("tableUpd", appConfig.minSecondsNodeTableUpdates);
   preferences.putString("otaUser", appConfig.otaUser);
   preferences.putString("otaPass", appConfig.otaPass);
+  preferences.putString("mqttHost", appConfig.mqttHost);
+  preferences.putUShort("mqttPort", appConfig.mqttPort);
+  preferences.putString("mqttUser", appConfig.mqttUser);
+  preferences.putString("mqttPass", appConfig.mqttPass);
+  preferences.putString("mqttTopic", appConfig.mqttTopic);
+  preferences.putInt("mqttIntv", appConfig.mqttInterval);
+  preferences.putBool("mqttHaDisc", appConfig.mqttDiscovery);
   preferences.end();
 }
 
@@ -95,25 +124,40 @@ void sendUdpPayload(const std::string &payload) {
               appConfig.influxPort);
 }
 
+void applyMqttSettings() {
+  MqttPublisher::Settings s;
+  s.host = appConfig.mqttHost;
+  s.port = appConfig.mqttPort;
+  s.user = appConfig.mqttUser;
+  s.pass = appConfig.mqttPass;
+  s.baseTopic = appConfig.mqttTopic;
+  uint8_t mac[6];
+  WiFi.macAddress(mac);
+  char suffix[8];
+  snprintf(suffix, sizeof(suffix), "-%02x%02x%02x", mac[3], mac[4], mac[5]);
+  s.clientId = appConfig.hostname + suffix;
+  mqtt.configure(s);
+}
+
 volatile bool isUpdatingOTA = false;
 
 void onOTAStart() {
   isUpdatingOTA = true;
-  WebSerial.println("OTA Update Started. Pausing reads from Tigo...");
+  taskLog.println("OTA Update Started. Pausing reads from Tigo...");
 }
 
 void onOTAEnd(bool success) {
   isUpdatingOTA = false;
   if (success) {
-    WebSerial.println("OTA Update Successful!");
+    taskLog.println("OTA Update Successful!");
   } else {
-    WebSerial.println("OTA Update Failed!");
+    taskLog.println("OTA Update Failed!");
   }
 }
 
 void runOtaUpdate(void *parameter) {
   onOTAStart();
-  GithubReleaseOTA ota("gongloo", "TigoTell");
+  GithubReleaseOTA ota(TIGOTELL_REPO_OWNER, TIGOTELL_REPO_NAME);
   GithubRelease release = ota.getLatestRelease();
   if (release.tag_name != NULL) {
     // Normalize versions for comparison
@@ -125,22 +169,22 @@ void runOtaUpdate(void *parameter) {
     bool fwNeedsUpdate = (fwCurrent != latest);
     bool fsNeedsUpdate = (fsVersion != latest);
 
-    WebSerial.printf("Versions - Current FW: %s, FS: %s | Latest: %s\n",
-                     fwCurrent.c_str(), fsVersion.c_str(), latest.c_str());
+    taskLog.printf("Versions - Current FW: %s, FS: %s | Latest: %s\n",
+                   fwCurrent.c_str(), fsVersion.c_str(), latest.c_str());
 
     if (fwNeedsUpdate || fsNeedsUpdate) {
       // 1. Unmount filesystem for safety
-      WebSerial.printf("Starting selective GitHub Update to v%s...",
-                       latest.c_str());
+      taskLog.printf("Starting selective GitHub Update to v%s...",
+                     latest.c_str());
       delay(100);
       yield();
 
       // 2. Flash Firmware if out of date (Priority)
       if (fwNeedsUpdate) {
         if (ota.flashFirmware(release, "firmware.bin") == OTA_SUCCESS) {
-          WebSerial.println("Firmware updated successfully.");
+          taskLog.println("Firmware updated successfully.");
         } else {
-          WebSerial.println("Firmware update FAILED or asset missing.");
+          taskLog.println("Firmware update FAILED or asset missing.");
         }
         delay(500);
         yield();
@@ -150,9 +194,9 @@ void runOtaUpdate(void *parameter) {
       if (fsNeedsUpdate) {
         LittleFS.end();
         if (ota.flashSpiffs(release, "littlefs.bin") == OTA_SUCCESS) {
-          WebSerial.println("FileSystem updated successfully.");
+          taskLog.println("FileSystem updated successfully.");
         } else {
-          WebSerial.println("FileSystem update FAILED or asset missing.");
+          taskLog.println("FileSystem update FAILED or asset missing.");
         }
         delay(500);
         yield();
@@ -160,16 +204,16 @@ void runOtaUpdate(void *parameter) {
 
       ota.freeRelease(release);
       onOTAEnd(true);
-      WebSerial.println("Update sequence complete. Rebooting...");
+      taskLog.println("Update sequence complete. Rebooting...");
       delay(3000);
       ESP.restart();
     } else {
-      WebSerial.println("Everything is already up to date.");
+      taskLog.println("Everything is already up to date.");
       ota.freeRelease(release);
       onOTAEnd(true);
     }
   } else {
-    WebSerial.println("Failed to fetch latest release for update.");
+    taskLog.println("Failed to fetch latest release for update.");
     onOTAEnd(false);
   }
   vTaskDelete(NULL);
@@ -179,6 +223,89 @@ AsyncWebServer server(80);
 NetWizard netWizard(&server);
 
 unsigned long lastStatsTime = 0;
+unsigned long lastMqttTime = 0;
+
+// Nodes without a power frame for this long are not published (matches the
+// dashboard's stale threshold).
+constexpr uint64_t kMqttStaleMs = 60000;
+
+// Home Assistant discovery state.
+String haDeviceId; // "tigotell_<last 3 MAC bytes>", set in setup()
+uint32_t lastDiscoveryGen = 0;
+// Discovered nodes; value = whether the barcode was known at the time, so the
+// config is re-sent once the barcode shows up.
+std::map<uint16_t, bool> discoveredNodes;
+std::map<uint16_t, bool> discoveredTaps; // value: barcode was known
+
+// A TAP that sent nothing for this long counts as offline.
+constexpr uint32_t kTapOfflineMs = 60000;
+// Modules heard through a TAP within this window count as connected to it.
+constexpr uint32_t kTapModuleWindowMs = 300000;
+
+String tapHexId(uint16_t id) {
+  char buf[8];
+  snprintf(buf, sizeof(buf), "%04X", id);
+  return buf;
+}
+
+// "ok", "degraded" (answers fewer than 90 % of recent polls) or "offline".
+const char *tapState(const TigoGatewayStatus &gw, uint32_t now) {
+  if (!gw.seen || now - gw.lastSeenMs > kTapOfflineMs)
+    return "offline";
+  int pct = gw.recentAnsweredPercent();
+  return pct >= 0 && pct < 90 ? "degraded" : "ok";
+}
+
+void tapToJson(JsonObject o, const TigoGatewayStatus &gw, uint32_t now) {
+  o["id"] = tapHexId(gw.id);
+  o["state"] = tapState(gw, now);
+  if (gw.seen)
+    o["last_seen_s"] = (now - gw.lastSeenMs) / 1000;
+  o["polls"] = gw.polls;
+  o["answered"] = gw.answered;
+  o["missed"] = gw.missed;
+  int pct = gw.recentAnsweredPercent();
+  if (pct >= 0)
+    o["recent_answered_pct"] = pct;
+  if (gw.rxBuffersUsed >= 0) {
+    o["rx_buffers_used"] = gw.rxBuffersUsed;
+    o["rx_buffers_max"] = gw.rxBuffersMax;
+  }
+  if (gw.txBuffersFree >= 0) {
+    o["tx_buffers_free"] = gw.txBuffersFree;
+    if (gw.txBuffersMin >= 0)
+      o["tx_buffers_min"] = gw.txBuffersMin;
+  }
+  if (gw.slotCounter >= 0)
+    o["slot_counter"] = gw.slotCounter;
+  o["packets"] = gw.packets;
+  o["power_reports"] = gw.powerReports;
+  int modules = 0;
+  long rssiSum = 0;
+  int rssiMin = 999;
+  for (auto const &[node, seen] : gw.nodes) {
+    if (now - seen.lastMs > kTapModuleWindowMs)
+      continue;
+    modules++;
+    rssiSum += seen.rssi;
+    rssiMin = std::min(rssiMin, seen.rssi);
+  }
+  o["modules"] = modules;
+  if (modules > 0) {
+    o["rssi_avg"] = static_cast<int>(rssiSum / modules);
+    o["rssi_min"] = rssiMin;
+  }
+  auto bc = parser.getGatewayBarcodes().find(gw.id);
+  if (bc != parser.getGatewayBarcodes().end())
+    o["barcode"] = bc->second.c_str();
+  if (!gw.version.empty())
+    o["version"] = gw.version.c_str();
+  if (gw.radioChannel >= 0)
+    o["radio_channel"] = gw.radioChannel;
+  if (gw.panId >= 0)
+    o["pan_id"] = tapHexId(gw.panId);
+}
+
 
 // Store the latest power frame and timestamp for each node
 struct PowerNodeData {
@@ -191,13 +318,69 @@ std::map<uint16_t, PowerNodeData> nodePowerData;
 struct NodeInfo {
   uint16_t address = 0;
   uint16_t pv_node_id = 0;
-  std::string barcode = "";
+  std::string barcode = "";      // Tigo format, e.g. "4-EF82C4J"
+  std::string long_address = ""; // 16 hex digits from the node table
   uint32_t barcode_fragment = 0;
   uint64_t last_seen = 0;
 };
 
 // Persistent registry of all discovered nodes
 std::map<uint16_t, NodeInfo> persistentNodeTable;
+
+// The CCA sends its node table (module ID -> long address) rarely, mostly
+// while modules are being added. Keep the mapping in NVS so it survives
+// restarts. Format: version byte, then per node 2 bytes ID + 8 bytes address.
+constexpr size_t kNodeMapMaxNodes = 200;
+
+void saveNodeMap(const std::vector<uint8_t> &blob) {
+  Preferences prefs; // own handle: loop() and web handlers may overlap
+  if (!prefs.begin("nodemap", false))
+    return;
+  bool ok = prefs.putBytes("v1", blob.data(), blob.size()) == blob.size();
+  prefs.end();
+  taskLog.printf("Node map %s: %u modules", ok ? "saved" : "NOT saved",
+                 (unsigned)((blob.size() - 1) / 10));
+}
+
+void loadNodeMap() {
+  Preferences prefs;
+  if (!prefs.begin("nodemap", true))
+    return;
+  size_t len = prefs.getBytesLength("v1");
+  std::vector<uint8_t> blob(len);
+  if (len > 0)
+    prefs.getBytes("v1", blob.data(), len);
+  prefs.end();
+  if (len < 1 || blob[0] != 1)
+    return;
+  for (size_t pos = 1; pos + 10 <= len; pos += 10) {
+    uint16_t id = (blob[pos] << 8) | blob[pos + 1];
+    char hex[17];
+    for (int i = 0; i < 8; i++)
+      snprintf(hex + i * 2, 3, "%02X", blob[pos + 2 + i]);
+    NodeInfo &info = persistentNodeTable[id];
+    info.pv_node_id = id;
+    info.long_address = hex;
+    info.barcode = tigoBarcodeFromHex(hex);
+  }
+}
+
+// Builds the blob from the registry; call with dataMutex held.
+std::vector<uint8_t> nodeMapBlob() {
+  std::vector<uint8_t> blob{1};
+  for (auto const &[id, info] : persistentNodeTable) {
+    if (info.long_address.size() != 16)
+      continue;
+    if ((blob.size() - 1) / 10 >= kNodeMapMaxNodes)
+      break;
+    blob.push_back(id >> 8);
+    blob.push_back(id & 0xFF);
+    for (int i = 0; i < 8; i++)
+      blob.push_back(strtol(info.long_address.substr(i * 2, 2).c_str(),
+                            nullptr, 16));
+  }
+  return blob;
+}
 
 // Store the last update time for each node
 std::map<uint16_t, unsigned long> lastUpdateTimes;
@@ -209,8 +392,297 @@ std::mutex dataMutex;
 std::map<uint16_t, PowerStatsAccumulator> nodeAccumulators;
 bool isElegantOtaStarted = false;
 
+// Layout for the designer page. Stored in NVS (not LittleFS), because a
+// filesystem update overwrites LittleFS completely. NVS is small (20 KB) and
+// shared with WiFi, PHY calibration and settings, so the layout may only use
+// what is left after keeping a reserve for those.
+constexpr size_t kLayoutMaxBytes = 8192;
+constexpr size_t kNvsReserveEntries = 64; // ~2 KB kept free for others
+const char *kDefaultLayout = "{\"v\":1,\"el\":[]}";
+
+// NVS entries a blob occupies: 32-byte data entries, a header per chunk (one
+// chunk per 4 KB page) and an index entry.
+size_t blobEntries(size_t len) {
+  return len == 0 ? 0 : (len + 31) / 32 + (len + 3999) / 4000 + 2;
+}
+
+size_t storedLayoutLength() {
+  size_t len = 0;
+  if (preferences.begin("tigolayout", true)) {
+    len = preferences.getBytesLength("layout");
+    preferences.end();
+  }
+  return len;
+}
+
+// Largest layout that can be stored right now.
+size_t layoutCapacity() {
+  nvs_stats_t stats;
+  if (nvs_get_stats(NULL, &stats) != ESP_OK)
+    return 0;
+  long entries = static_cast<long>(stats.available_entries) +
+                 static_cast<long>(blobEntries(storedLayoutLength())) -
+                 static_cast<long>(kNvsReserveEntries);
+  // Overhead of a blob that spans up to three pages.
+  long bytes = (entries - 5) * 32;
+  if (bytes <= 0)
+    return 0;
+  return std::min(static_cast<size_t>(bytes), kLayoutMaxBytes);
+}
+
+String loadLayout() {
+  String layout;
+  if (preferences.begin("tigolayout", true)) {
+    size_t len = preferences.getBytesLength("layout");
+    if (len > 0) {
+      std::unique_ptr<char[]> buf(new (std::nothrow) char[len + 1]);
+      if (buf && preferences.getBytes("layout", buf.get(), len) == len) {
+        buf[len] = '\0';
+        layout = buf.get();
+      }
+    }
+    preferences.end();
+  }
+  return layout.length() > 0 ? layout : String(kDefaultLayout);
+}
+
+// Remove first: NVS would otherwise need room for old and new blob at once.
+// Only called after layoutCapacity() confirmed the new blob fits.
+bool saveLayout(const uint8_t *data, size_t len) {
+  if (!preferences.begin("tigolayout", false))
+    return false;
+  preferences.remove("layout");
+  bool ok = preferences.putBytes("layout", data, len) == len;
+  preferences.end();
+  return ok;
+}
+
+void addHaSensor(JsonObject cmps, const String &uidBase, const char *key,
+                 const char *name, const char *deviceClass, const char *unit,
+                 const char *stateClass, bool diagnostic) {
+  String uid = uidBase + "_" + key;
+  JsonObject c = cmps[uid].to<JsonObject>();
+  c["p"] = "sensor";
+  c["name"] = name;
+  c["uniq_id"] = uid;
+  c["val_tpl"] = String("{{ value_json.") + key + " }}";
+  if (deviceClass)
+    c["dev_cla"] = deviceClass;
+  if (unit)
+    c["unit_of_meas"] = unit;
+  if (stateClass)
+    c["stat_cla"] = stateClass;
+  if (diagnostic)
+    c["ent_cat"] = "diagnostic";
+}
+
+// Fills the parts shared by all discovery messages and sends it retained.
+void sendHaDiscovery(JsonDocument &doc, const String &objectId,
+                     const String &stateSubTopic) {
+  JsonObject origin = doc["o"].to<JsonObject>();
+  origin["name"] = "TigoTell";
+  origin["sw"] = VERSION;
+  origin["url"] = TIGOTELL_REPO_URL;
+  doc["stat_t"] = appConfig.mqttTopic + "/" + stateSubTopic;
+  doc["avty_t"] = appConfig.mqttTopic + "/status";
+  // Values without update for this long show as unavailable in HA.
+  doc["exp_aft"] = 3 * appConfig.mqttInterval + 60;
+
+  String payload;
+  serializeJson(doc, payload);
+  mqtt.enqueueAbsolute("homeassistant/device/" + objectId + "/config", payload,
+                       true);
+}
+
+void publishHaSystemDiscovery() {
+  JsonDocument doc;
+  JsonObject dev = doc["dev"].to<JsonObject>();
+  dev["ids"] = haDeviceId;
+  dev["name"] = appConfig.hostname;
+  dev["mdl"] = "TigoTell";
+  dev["sw"] = VERSION;
+  dev["cu"] = "http://" + WiFi.localIP().toString() + "/";
+
+  JsonObject cmps = doc["cmps"].to<JsonObject>();
+  addHaSensor(cmps, haDeviceId, "total_power", "Total power", "power", "W",
+              "measurement", false);
+  addHaSensor(cmps, haDeviceId, "active_nodes", "Active modules", nullptr,
+              nullptr, "measurement", false);
+  addHaSensor(cmps, haDeviceId, "known_nodes", "Known modules", nullptr,
+              nullptr, "measurement", true);
+  addHaSensor(cmps, haDeviceId, "crc_errors", "CRC errors", nullptr, nullptr,
+              "total_increasing", true);
+  addHaSensor(cmps, haDeviceId, "total_frames", "Frames", nullptr, nullptr,
+              "total_increasing", true);
+  addHaSensor(cmps, haDeviceId, "uptime_s", "Uptime", "duration", "s",
+              nullptr, true);
+
+  sendHaDiscovery(doc, haDeviceId, "stats");
+}
+
+void publishHaNodeDiscovery(uint16_t nodeId, const std::string &barcode) {
+  String uidBase = haDeviceId + "_node_" + String(nodeId);
+  JsonDocument doc;
+  JsonObject dev = doc["dev"].to<JsonObject>();
+  dev["ids"] = uidBase;
+  dev["name"] = "Tigo Module " + String(nodeId);
+  dev["mf"] = "Tigo";
+  dev["mdl"] = "PV module optimizer";
+  if (!barcode.empty())
+    dev["sn"] = barcode.c_str();
+  dev["via_device"] = haDeviceId;
+
+  JsonObject cmps = doc["cmps"].to<JsonObject>();
+  addHaSensor(cmps, uidBase, "power", "Power", "power", "W", "measurement",
+              false);
+  addHaSensor(cmps, uidBase, "voltage_in", "Voltage in", "voltage", "V",
+              "measurement", false);
+  addHaSensor(cmps, uidBase, "voltage_out", "Voltage out", "voltage", "V",
+              "measurement", false);
+  addHaSensor(cmps, uidBase, "current_in", "Current", "current", "A",
+              "measurement", false);
+  addHaSensor(cmps, uidBase, "temperature", "Temperature", "temperature",
+              "°C", "measurement", false);
+  addHaSensor(cmps, uidBase, "duty_cycle", "Duty cycle", nullptr, nullptr,
+              "measurement", true);
+  addHaSensor(cmps, uidBase, "rssi", "RSSI", "signal_strength", "dBm",
+              "measurement", true);
+
+  sendHaDiscovery(doc, uidBase, "node/" + String(nodeId));
+}
+
+void publishHaTapDiscovery(uint16_t id) {
+  String hex = tapHexId(id);
+  String uidBase = haDeviceId + "_tap_" + hex;
+  JsonDocument doc;
+  JsonObject dev = doc["dev"].to<JsonObject>();
+  dev["ids"] = uidBase;
+  dev["name"] = "Tigo TAP " + hex;
+  dev["mf"] = "Tigo";
+  dev["mdl"] = "TAP (Access Point)";
+  auto bc = parser.getGatewayBarcodes().find(id);
+  if (bc != parser.getGatewayBarcodes().end())
+    dev["sn"] = bc->second.c_str();
+  dev["via_device"] = haDeviceId;
+
+  JsonObject cmps = doc["cmps"].to<JsonObject>();
+  JsonObject online = cmps[uidBase + "_online"].to<JsonObject>();
+  online["p"] = "binary_sensor";
+  online["name"] = "Connection";
+  online["uniq_id"] = uidBase + "_online";
+  online["dev_cla"] = "connectivity";
+  online["val_tpl"] = "{{ 'OFF' if value_json.state == 'offline' else 'ON' }}";
+  addHaSensor(cmps, uidBase, "recent_answered_pct", "Polls answered", nullptr,
+              "%", "measurement", false);
+  addHaSensor(cmps, uidBase, "modules", "Modules", nullptr, nullptr,
+              "measurement", false);
+  addHaSensor(cmps, uidBase, "rssi_avg", "Average module signal", nullptr,
+              nullptr, "measurement", true);
+  addHaSensor(cmps, uidBase, "rx_buffers_used", "Receive buffers used",
+              nullptr, nullptr, "measurement", true);
+  addHaSensor(cmps, uidBase, "tx_buffers_free", "Transmit buffers free",
+              nullptr, nullptr, "measurement", true);
+  addHaSensor(cmps, uidBase, "missed", "Missed polls", nullptr, nullptr,
+              "total_increasing", true);
+
+  sendHaDiscovery(doc, uidBase, "tap/" + hex);
+}
+
+void publishMqtt() {
+  std::lock_guard<std::mutex> lock(dataMutex);
+  uint64_t now = esp_timer_get_time() / 1000;
+
+  bool discovery = appConfig.mqttDiscovery;
+  if (discovery && mqtt.discoveryGeneration() != lastDiscoveryGen) {
+    lastDiscoveryGen = mqtt.discoveryGeneration();
+    discoveredNodes.clear();
+    discoveredTaps.clear();
+    publishHaSystemDiscovery();
+  }
+  float totalPower = 0;
+  int activeNodes = 0;
+
+  for (auto const &[key, val] : nodePowerData) {
+    if (now - val.last_updated > kMqttStaleMs)
+      continue;
+    const auto &frame = val.frame;
+    float power = frame->voltage_out * frame->current_in;
+    totalPower += power;
+    activeNodes++;
+
+    JsonDocument doc;
+    doc["pv_node_id"] = frame->pv_node_id;
+    doc["address"] = frame->address;
+    auto info = persistentNodeTable.find(frame->pv_node_id);
+    std::string barcode;
+    if (info != persistentNodeTable.end())
+      barcode = info->second.barcode;
+    if (!barcode.empty())
+      doc["barcode"] = barcode.c_str();
+
+    if (discovery) {
+      auto known = discoveredNodes.find(frame->pv_node_id);
+      if (known == discoveredNodes.end() ||
+          (!known->second && !barcode.empty())) {
+        publishHaNodeDiscovery(frame->pv_node_id, barcode);
+        discoveredNodes[frame->pv_node_id] = !barcode.empty();
+      }
+    }
+    doc["power"] = power;
+    doc["voltage_in"] = frame->voltage_in;
+    doc["voltage_out"] = frame->voltage_out;
+    doc["current_in"] = frame->current_in;
+    doc["temperature"] = frame->temperature;
+    doc["duty_cycle"] = frame->duty_cycle;
+    doc["rssi"] = frame->rssi;
+    doc["age_s"] = (now - val.last_updated) / 1000;
+
+    String payload;
+    serializeJson(doc, payload);
+    mqtt.enqueue("node/" + String(frame->pv_node_id), payload);
+  }
+
+  const auto &stats = parser.getStatistics();
+  JsonDocument doc;
+  doc["total_power"] = totalPower;
+  doc["active_nodes"] = activeNodes;
+  doc["known_nodes"] = persistentNodeTable.size();
+  doc["total_frames"] = stats.totalPhysicalFrames;
+  doc["crc_errors"] = stats.crcErrors;
+  doc["power_count"] = stats.powerDataCount;
+  doc["announce_count"] = stats.announceCount;
+  doc["nodetable_count"] = stats.nodeTableCount;
+  doc["uptime_s"] = now / 1000;
+  doc["version"] = VERSION;
+
+  String payload;
+  serializeJson(doc, payload);
+  mqtt.enqueue("stats", payload);
+
+  uint32_t nowMs = millis();
+  for (auto const &[id, gw] : parser.getGateways()) {
+    if (!gw.seen && gw.polls == 0)
+      continue;
+    if (discovery) {
+      bool hasBarcode = parser.getGatewayBarcodes().count(id) > 0;
+      auto known = discoveredTaps.find(id);
+      if (known == discoveredTaps.end() || (!known->second && hasBarcode)) {
+        publishHaTapDiscovery(id);
+        discoveredTaps[id] = hasBarcode;
+      }
+    }
+    JsonDocument tapDoc;
+    tapToJson(tapDoc.to<JsonObject>(), gw, nowMs);
+    String tapPayload;
+    serializeJson(tapDoc, tapPayload);
+    mqtt.enqueue("tap/" + tapHexId(id), tapPayload);
+  }
+}
+
 void setup() {
+  health::begin();
   loadSettings();
+  loadNodeMap();
 
   Serial.begin(115200);
   pinMode(appConfig.enPin, OUTPUT);
@@ -250,6 +722,17 @@ void setup() {
   // Setup WebSerial
   WebSerial.begin(&server);
 
+  // MQTT (runs in its own task)
+  {
+    uint8_t mac[6];
+    WiFi.macAddress(mac);
+    char id[24];
+    snprintf(id, sizeof(id), "tigotell_%02x%02x%02x", mac[3], mac[4], mac[5]);
+    haDeviceId = id;
+  }
+  mqtt.begin();
+  applyMqttSettings();
+
   // JSON Dump endpoint
   server.on("/json", HTTP_GET, [](AsyncWebServerRequest *request) {
     JsonDocument doc;
@@ -274,6 +757,17 @@ void setup() {
       root["build_timestamp"] = BUILD_TIMESTAMP;
       root["uptime_ms"] = esp_timer_get_time() / 1000;
 
+      JsonObject jsonSys = root["system"].to<JsonObject>();
+      health::toJson(jsonSys);
+      nvs_stats_t nvsStats = {};
+      if (nvs_get_stats(NULL, &nvsStats) == ESP_OK)
+        jsonSys["nvs_free_entries"] = nvsStats.available_entries;
+
+      JsonObject jsonMqtt = root["mqtt"].to<JsonObject>();
+      jsonMqtt["enabled"] = mqtt.isEnabled();
+      jsonMqtt["connected"] = mqtt.isConnected();
+      jsonMqtt["published"] = mqtt.publishedCount();
+
       // Power Data (Latest Metrics)
       JsonArray powerNodes = root["power"].to<JsonArray>();
       for (auto const &[key, val] : nodePowerData) {
@@ -287,7 +781,17 @@ void setup() {
         node["temperature"] = frame->temperature;
         node["duty_cycle"] = frame->duty_cycle;
         node["rssi"] = frame->rssi;
+        if (frame->gateway_id)
+          node["gateway"] = tapHexId(frame->gateway_id);
         node["last_updated"] = val.last_updated;
+      }
+
+      // TAPs (gateways) as seen on the bus
+      JsonArray taps = root["taps"].to<JsonArray>();
+      uint32_t nowMs = millis();
+      for (auto const &[id, gw] : parser.getGateways()) {
+        if (gw.seen || gw.polls > 0)
+          tapToJson(taps.add<JsonObject>(), gw, nowMs);
       }
 
       // Discovery Data (Persistent Map)
@@ -296,6 +800,8 @@ void setup() {
         JsonObject node = discoverNodes.add<JsonObject>();
         node["address"] = val.address;
         node["pv_node_id"] = val.pv_node_id;
+        if (!val.long_address.empty())
+          node["long_address"] = val.long_address.c_str();
         if (!val.barcode.empty()) {
           node["barcode"] = val.barcode.c_str();
         }
@@ -327,6 +833,13 @@ void setup() {
     doc["measurementName"] = appConfig.measurementName;
     doc["minSecondsNodeUpdates"] = appConfig.minSecondsNodeUpdates;
     doc["minSecondsNodeTableUpdates"] = appConfig.minSecondsNodeTableUpdates;
+    doc["mqttHost"] = appConfig.mqttHost;
+    doc["mqttPort"] = appConfig.mqttPort;
+    doc["mqttUser"] = appConfig.mqttUser;
+    doc["mqttTopic"] = appConfig.mqttTopic;
+    doc["mqttInterval"] = appConfig.mqttInterval;
+    doc["mqttDiscovery"] = appConfig.mqttDiscovery;
+    doc["otaEnabled"] = isElegantOtaStarted;
 
     AsyncResponseStream *response =
         request->beginResponseStream("application/json");
@@ -373,12 +886,99 @@ void setup() {
             if (val.length() > 0)
               appConfig.otaPass = val;
           }
+          if (doc["mqttHost"].is<const char *>())
+            appConfig.mqttHost = doc["mqttHost"].as<String>();
+          if (doc["mqttPort"].is<int>())
+            appConfig.mqttPort = doc["mqttPort"];
+          if (doc["mqttUser"].is<const char *>())
+            appConfig.mqttUser = doc["mqttUser"].as<String>();
+          if (doc["mqttPass"].is<const char *>()) {
+            String val = doc["mqttPass"].as<String>();
+            if (val.length() > 0)
+              appConfig.mqttPass = val;
+          }
+          if (doc["mqttTopic"].is<const char *>()) {
+            String val = doc["mqttTopic"].as<String>();
+            val.trim();
+            while (val.endsWith("/"))
+              val.remove(val.length() - 1);
+            if (val.length() > 0)
+              appConfig.mqttTopic = val;
+          }
+          if (doc["mqttInterval"].is<int>())
+            appConfig.mqttInterval = max(1, doc["mqttInterval"].as<int>());
+          if (doc["mqttDiscovery"].is<bool>())
+            appConfig.mqttDiscovery = doc["mqttDiscovery"];
 
           saveSettings();
+          applyMqttSettings();
           request->send(200, "text/plain", "OK");
         } else {
           request->send(400, "text/plain", "Invalid JSON");
         }
+      });
+
+  // Layout endpoints (designer page)
+  server.on("/api/layout", HTTP_GET, [](AsyncWebServerRequest *request) {
+    AsyncWebServerResponse *response =
+        request->beginResponse(200, "application/json", loadLayout());
+    response->addHeader("X-Layout-Max", String(layoutCapacity()));
+    response->addHeader("Cache-Control", "no-store");
+    request->send(response);
+  });
+
+  server.on(
+      "/api/layout", HTTP_POST,
+      [](AsyncWebServerRequest *request) {
+        size_t capacity = layoutCapacity();
+        if (request->contentLength() > capacity) {
+          taskLog.printf("Layout: %u bytes rejected, room for %u bytes\n",
+                         request->contentLength(), capacity);
+          AsyncWebServerResponse *response = request->beginResponse(
+              413, "text/plain",
+              "Layout too large: the device has room for " + String(capacity) +
+                  " bytes");
+          response->addHeader("X-Layout-Max", String(capacity));
+          request->send(response);
+          return;
+        }
+        if (!request->_tempObject) {
+          request->send(400, "text/plain", "Empty body");
+          return;
+        }
+        const uint8_t *data = static_cast<const uint8_t *>(request->_tempObject);
+        size_t len = request->contentLength();
+        JsonDocument doc;
+        if (deserializeJson(doc, data, len) || !doc["el"].is<JsonArray>()) {
+          request->send(400, "text/plain", "Invalid layout JSON");
+          return;
+        }
+        unsigned long started = millis();
+        bool ok = saveLayout(data, len);
+        nvs_stats_t stats = {};
+        nvs_get_stats(NULL, &stats);
+        taskLog.printf("Layout: %s %u bytes in %lu ms, NVS entries left %u, "
+                       "free heap %u\n",
+                       ok ? "saved" : "FAILED to save", len,
+                       millis() - started, stats.available_entries,
+                       ESP.getFreeHeap());
+        if (!ok) {
+          request->send(507, "text/plain",
+                        "The device could not store the layout");
+          return;
+        }
+        request->send(200, "text/plain", "OK");
+      },
+      NULL,
+      [](AsyncWebServerRequest *request, uint8_t *data, size_t len,
+         size_t index, size_t total) {
+        if (total > kLayoutMaxBytes)
+          return;
+        if (index == 0)
+          request->_tempObject = malloc(total);
+        if (request->_tempObject)
+          memcpy(static_cast<uint8_t *>(request->_tempObject) + index, data,
+                 len);
       });
 
   // Reboot endpoint
@@ -398,7 +998,7 @@ void setup() {
   server.on("/api/update/check", HTTP_GET, [](AsyncWebServerRequest *request) {
     // We do the check in-request, which might be slow.
     // GitHub API can take a second or two.
-    GithubReleaseOTA ota("gongloo", "TigoTell");
+    GithubReleaseOTA ota(TIGOTELL_REPO_OWNER, TIGOTELL_REPO_NAME);
 
     // Optional: Set insecure if certificates are a pain, but let's try defaults
     // first ota.setInsecure();
@@ -414,7 +1014,7 @@ void setup() {
       doc["latest_version"] = latest;
       String current = String(VERSION);
 
-      WebSerial.printf(
+      taskLog.printf(
           "[UpdateCheck] FW Current: %s, FS Current: %s, Github Latest: %s\n",
           current.c_str(), fsVersion.c_str(), latest.c_str());
 
@@ -457,11 +1057,31 @@ void setup() {
   } else {
     isElegantOtaStarted = false;
     Serial.println("ElegantOTA disabled (no credentials).");
+    // Explain instead of answering "Not found".
+    server.on("/update", HTTP_GET, [](AsyncWebServerRequest *request) {
+      request->send(
+          200, "text/html",
+          "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"UTF-8\">"
+          "<meta name=\"viewport\" content=\"width=device-width, "
+          "initial-scale=1.0\"><title>Firmware update disabled</title>"
+          "<link rel=\"stylesheet\" href=\"/style.css\"></head><body>"
+          "<div class=\"container\"><header><h1>Firmware update disabled"
+          "</h1></header><p>The firmware upload page needs a username and "
+          "password.</p><p>Set them under <a href=\"/config.html#ota\">"
+          "Settings &rsaquo; OTA Authentication</a>, save, then reboot the "
+          "device.</p><p><a href=\"/\">Back to dashboard</a></p></div>"
+          "</body></html>");
+    });
   }
   server.begin();
+
+  // Restart (instead of hanging silently) if loop() ever stalls for 5 s.
+  enableLoopWDT();
 }
 
 void loop() {
+  taskLog.flush();
+  health::loop(isUpdatingOTA);
   netWizard.loop();
   if (isElegantOtaStarted) {
     ElegantOTA.loop();
@@ -489,6 +1109,7 @@ void loop() {
           bytesToRead); // Direct FIFO extraction, skips Stream::timedRead()
       if (count > 0) {
         std::lock_guard<std::mutex> lock(dataMutex);
+        parser.setTime(millis());
         parser.pushBytes(serialBuf, count);
       }
     }
@@ -611,14 +1232,24 @@ void loop() {
         }
 
         // Update persistent node table with all records from this frame
+        bool changed = false;
+        std::vector<uint8_t> blob;
         {
           std::lock_guard<std::mutex> lock(dataMutex);
           for (const auto &entry : nodeTableFrame->nodes) {
             NodeInfo &info = persistentNodeTable[entry.pv_node_id];
             info.pv_node_id = entry.pv_node_id;
-            info.barcode = entry.barcode;
+            if (info.long_address != entry.barcode) {
+              info.long_address = entry.barcode;
+              info.barcode = tigoBarcodeFromHex(entry.barcode);
+              changed = true;
+            }
           }
+          if (changed)
+            blob = nodeMapBlob();
         }
+        if (changed)
+          saveNodeMap(blob);
       }
       break;
     }
@@ -639,5 +1270,13 @@ void loop() {
 
     WebSerial.print("Sent Stats: ");
     WebSerial.println(statsLine.c_str());
+  }
+
+  // Publish data points to MQTT periodically
+  if (mqtt.isConnected() &&
+      millis() - lastMqttTime >
+          static_cast<unsigned long>(appConfig.mqttInterval) * 1000) {
+    lastMqttTime = millis();
+    publishMqtt();
   }
 }

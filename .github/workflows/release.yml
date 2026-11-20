@@ -59,6 +59,11 @@ jobs:
 
       - name: Build Firmware
         if: steps.check_release.outputs.EXISTS == 'false'
+        env:
+          # The device checks this repository's releases for updates.
+          PLATFORMIO_BUILD_FLAGS: >-
+            '-DTIGOTELL_REPO_OWNER="${{ github.repository_owner }}"'
+            '-DTIGOTELL_REPO_NAME="${{ github.event.repository.name }}"'
         run: |
           pio pkg install -e esp32-s3-devkitm-1
           pio run -e esp32-s3-devkitm-1
@@ -126,5 +131,6 @@ jobs:
             "$BUILD_DIR/littlefs.bin" \
             "$BUILD_DIR/tigotell-factory.bin" \
             "$BUILD_DIR/manifest.json" \
+            "$BUILD_DIR/firmware.elf" \
             --title "Release v${{ steps.get_version.outputs.VERSION }}" \
             --generate-notes
