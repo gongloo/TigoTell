@@ -1,10 +1,12 @@
 #ifndef TIGO_PROTOCOL_H
 #define TIGO_PROTOCOL_H
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <deque>
 #include <iomanip>
+#include <map>
 #include <memory>
 #include <sstream>
 #include <string>
@@ -34,6 +36,7 @@ public:
   float current_in;
   float temperature;
   int rssi;
+  uint16_t gateway_id = 0; // TAP that relayed this report
 
   TigoPowerFrame(uint16_t addr, uint16_t id, float vin, float vout,
                  uint8_t duty, float iin, float temp, int rssi_val);
@@ -76,6 +79,42 @@ public:
   std::string toString() const override;
 };
 
+// What the bus traffic reveals about one TAP (gateway). Everything is
+// observed passively from the CCA's polling.
+struct TigoGatewayStatus {
+  uint16_t id = 0;
+  uint32_t lastSeenMs = 0;  // last frame sent by the TAP
+  bool seen = false;        // TAP has sent at least one frame
+  uint32_t polls = 0;       // receive requests from the CCA
+  uint32_t answered = 0;    // ... answered by the TAP
+  uint32_t missed = 0;      // ... not answered before the next poll
+  uint64_t recentBits = 0;  // last polls, 1 = answered (newest in bit 0)
+  uint8_t recentCount = 0;  // valid bits in recentBits (max 64)
+  bool awaiting = false;
+  int rxBuffersUsed = -1, rxBuffersMax = -1;
+  int txBuffersFree = -1, txBuffersMin = -1;
+  int slotCounter = -1;
+  uint32_t packets = 0;      // PV packets relayed to the CCA
+  uint32_t powerReports = 0; // ... of which power reports
+  uint32_t commands = 0;     // command responses
+  int radioChannel = -1;
+  int panId = -1;
+  std::string version;
+  struct NodeSeen {
+    uint32_t lastMs;
+    int rssi;
+  };
+  std::map<uint16_t, NodeSeen> nodes; // modules heard through this TAP
+
+  // Share of the recent polls the TAP answered, or -1 if none yet.
+  int recentAnsweredPercent() const;
+};
+
+// Tigo barcode (e.g. "4-9A57A2L") for an 8-byte long address.
+std::string tigoBarcode(const uint8_t *longAddress);
+// Same, for a long address given as 16 hex digits; "" if malformed.
+std::string tigoBarcodeFromHex(const std::string &hex);
+
 // Class for handling the byte stream and producing frames
 class TigoParser {
 public:
@@ -104,6 +143,16 @@ public:
   std::unique_ptr<TigoFrame> popFrame();
 
   const Statistics &getStatistics() const { return stats; }
+
+  // Time base for gateway tracking; call before pushing bytes.
+  void setTime(uint32_t ms) { nowMs = ms; }
+  const std::map<uint16_t, TigoGatewayStatus> &getGateways() const {
+    return gateways;
+  }
+  // Barcodes learned while the CCA (re)assigns gateway IDs, by gateway ID.
+  const std::map<uint16_t, std::string> &getGatewayBarcodes() const {
+    return gatewayBarcodes;
+  }
   std::string
   getStatisticsInfluxLineProtocol(const std::string &measurementName) const;
 
@@ -115,9 +164,14 @@ private:
   Statistics stats;
   bool ignoreFirstCrcError;
   std::deque<std::unique_ptr<TigoFrame>> frameQueue;
+  std::map<uint16_t, TigoGatewayStatus> gateways;
+  std::map<uint16_t, std::string> gatewayBarcodes;
+  uint32_t nowMs = 0;
 
   void processFrame(const std::vector<uint8_t> &frame);
-  void parseTLVPayload(const std::vector<uint8_t> &payload);
+  void trackGateway(const std::vector<uint8_t> &payload);
+  void parseTLVPayload(const std::vector<uint8_t> &payload,
+                       TigoGatewayStatus *gw);
   void parseManagementPayload(const std::vector<uint8_t> &payload);
   bool verifyCRC(const std::vector<uint8_t> &frame);
   uint16_t computeCRC(const uint8_t *data, size_t length);

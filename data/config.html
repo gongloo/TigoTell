@@ -47,6 +47,31 @@
             margin-top: 0.25rem;
         }
 
+        .checkbox-row {
+            display: flex;
+            align-items: center;
+            gap: 0.75rem;
+            margin-top: 1.5rem;
+            cursor: pointer;
+        }
+
+        .checkbox-row input {
+            width: 1.25rem;
+            height: 1.25rem;
+            margin: 0;
+            padding: 0;
+            flex: none;
+            accent-color: var(--primary);
+        }
+
+        .checkbox-row span {
+            font-size: 0.875rem;
+            font-weight: 600;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+        }
+
         .button-group {
             display: flex;
             flex-wrap: wrap;
@@ -190,6 +215,45 @@
             </section>
 
             <section class="card config-card">
+                <h2>MQTT Publishing</h2>
+                <div class="grid-2">
+                    <div>
+                        <label for="mqttHost">MQTT Broker</label>
+                        <input type="text" id="mqttHost" name="mqttHost" placeholder="192.168.1.100">
+                    </div>
+                    <div>
+                        <label for="mqttPort">Port</label>
+                        <input type="number" id="mqttPort" name="mqttPort" min="0" max="65535">
+                    </div>
+                    <div>
+                        <label for="mqttUser">Username</label>
+                        <input type="text" id="mqttUser" name="mqttUser" placeholder="Optional" autocomplete="off">
+                    </div>
+                    <div>
+                        <label for="mqttPass">Password</label>
+                        <input type="password" id="mqttPass" name="mqttPass" placeholder="Keep current" autocomplete="new-password">
+                    </div>
+                </div>
+                <p class="help-text">Leave Broker empty to disable MQTT. Leave Username empty to connect without authentication; leave Password blank to keep the current one. Changes apply immediately.</p>
+                <div class="grid-2">
+                    <div>
+                        <label for="mqttTopic">Base Topic</label>
+                        <input type="text" id="mqttTopic" name="mqttTopic" placeholder="tigotell">
+                    </div>
+                    <div>
+                        <label for="mqttInterval">Publish Interval (s)</label>
+                        <input type="number" id="mqttInterval" name="mqttInterval" min="1" max="3600">
+                    </div>
+                </div>
+                <p class="help-text">Publishes JSON to &lt;base&gt;/node/&lt;id&gt; per module and &lt;base&gt;/stats; &lt;base&gt;/status is online/offline (retained).</p>
+                <label class="checkbox-row" for="mqttDiscovery">
+                    <input type="checkbox" id="mqttDiscovery" name="mqttDiscovery">
+                    <span>Home Assistant Discovery</span>
+                </label>
+                <p class="help-text">Announces TigoTell and every module as devices with sensors under homeassistant/device/… (retained). Requires Home Assistant 2024.11 or newer.</p>
+            </section>
+
+            <section class="card config-card">
                 <h2>Throttling</h2>
                 <div class="grid-2">
                     <div>
@@ -205,8 +269,9 @@
                 <p class="help-text">Minimum time between sending updates for individual nodes and the full table.</p>
             </section>
             
-            <section class="card config-card">
+            <section class="card config-card" id="ota">
                 <h2>OTA Authentication (ElegantOTA)</h2>
+                <p id="ota-status" class="help-text"></p>
                 <div class="grid-2">
                     <div>
                         <label for="otaUser">OTA Username</label>
@@ -217,7 +282,7 @@
                         <input type="password" id="otaPass" name="otaPass" placeholder="Keep current">
                     </div>
                 </div>
-                <p class="help-text">Leave both blank to keep current credentials. Use "..." to disable ElegantOTA.</p>
+                <p class="help-text">Leave both blank to keep current credentials. Use "..." to disable ElegantOTA. Changes take effect after a reboot.</p>
             </section>
 
             <div class="button-group">
@@ -245,10 +310,19 @@
             try {
                 const response = await fetch('/api/config');
                 const config = await response.json();
+                const otaStatus = document.getElementById('ota-status');
+                otaStatus.innerHTML = config.otaEnabled
+                    ? 'Firmware upload page is active at <a href="/update">/update</a>.'
+                    : 'Firmware upload page is disabled. Set a username and password, save, then reboot.';
+                otaStatus.style.color = config.otaEnabled ? 'var(--success)' : 'var(--warning)';
                 for (const key in config) {
                     const input = document.getElementById(key);
                     if (input) {
-                        input.value = config[key];
+                        if (input.type === 'checkbox') {
+                            input.checked = !!config[key];
+                        } else {
+                            input.value = config[key];
+                        }
                     }
                 }
             } catch (error) {
@@ -263,12 +337,14 @@
             const data = {};
             formData.forEach((value, key) => {
                 // Convert numbers
-                if (['txPin', 'rxPin', 'enPin', 'influxPort', 'pushStatsInterval', 'minSecondsNodeUpdates', 'minSecondsNodeTableUpdates'].includes(key)) {
+                if (['txPin', 'rxPin', 'enPin', 'influxPort', 'pushStatsInterval', 'minSecondsNodeUpdates', 'minSecondsNodeTableUpdates', 'mqttPort', 'mqttInterval'].includes(key)) {
                     data[key] = value.trim() ? parseInt(value) : 0;
                 } else {
                     data[key] = value;
                 }
             });
+            // Unchecked checkboxes are missing from FormData.
+            data.mqttDiscovery = document.getElementById('mqttDiscovery').checked;
 
             try {
                 const response = await fetch('/api/config', {
