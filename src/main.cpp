@@ -193,13 +193,69 @@ std::map<uint16_t, PowerNodeData> nodePowerData;
 struct NodeInfo {
   uint16_t address = 0;
   uint16_t pv_node_id = 0;
-  std::string barcode = "";
+  std::string barcode = "";      // Tigo format, e.g. "4-EF82C4J"
+  std::string long_address = ""; // 16 hex digits from the node table
   uint32_t barcode_fragment = 0;
   uint64_t last_seen = 0;
 };
 
 // Persistent registry of all discovered nodes
 std::map<uint16_t, NodeInfo> persistentNodeTable;
+
+// The CCA sends its node table (module ID -> long address) rarely, mostly
+// while modules are being added. Keep the mapping in NVS so it survives
+// restarts. Format: version byte, then per node 2 bytes ID + 8 bytes address.
+constexpr size_t kNodeMapMaxNodes = 200;
+
+void saveNodeMap(const std::vector<uint8_t> &blob) {
+  Preferences prefs; // own handle: loop() and web handlers may overlap
+  if (!prefs.begin("nodemap", false))
+    return;
+  bool ok = prefs.putBytes("v1", blob.data(), blob.size()) == blob.size();
+  prefs.end();
+  taskLog.printf("Node map %s: %u modules", ok ? "saved" : "NOT saved",
+                 (unsigned)((blob.size() - 1) / 10));
+}
+
+void loadNodeMap() {
+  Preferences prefs;
+  if (!prefs.begin("nodemap", true))
+    return;
+  size_t len = prefs.getBytesLength("v1");
+  std::vector<uint8_t> blob(len);
+  if (len > 0)
+    prefs.getBytes("v1", blob.data(), len);
+  prefs.end();
+  if (len < 1 || blob[0] != 1)
+    return;
+  for (size_t pos = 1; pos + 10 <= len; pos += 10) {
+    uint16_t id = (blob[pos] << 8) | blob[pos + 1];
+    char hex[17];
+    for (int i = 0; i < 8; i++)
+      snprintf(hex + i * 2, 3, "%02X", blob[pos + 2 + i]);
+    NodeInfo &info = persistentNodeTable[id];
+    info.pv_node_id = id;
+    info.long_address = hex;
+    info.barcode = tigoBarcodeFromHex(hex);
+  }
+}
+
+// Builds the blob from the registry; call with dataMutex held.
+std::vector<uint8_t> nodeMapBlob() {
+  std::vector<uint8_t> blob{1};
+  for (auto const &[id, info] : persistentNodeTable) {
+    if (info.long_address.size() != 16)
+      continue;
+    if ((blob.size() - 1) / 10 >= kNodeMapMaxNodes)
+      break;
+    blob.push_back(id >> 8);
+    blob.push_back(id & 0xFF);
+    for (int i = 0; i < 8; i++)
+      blob.push_back(strtol(info.long_address.substr(i * 2, 2).c_str(),
+                            nullptr, 16));
+  }
+  return blob;
+}
 
 // Store the last update time for each node
 std::map<uint16_t, unsigned long> lastUpdateTimes;
@@ -213,6 +269,7 @@ bool isElegantOtaStarted = false;
 
 void setup() {
   loadSettings();
+  loadNodeMap();
 
   Serial.begin(115200);
   pinMode(appConfig.enPin, OUTPUT);
@@ -298,6 +355,8 @@ void setup() {
         JsonObject node = discoverNodes.add<JsonObject>();
         node["address"] = val.address;
         node["pv_node_id"] = val.pv_node_id;
+        if (!val.long_address.empty())
+          node["long_address"] = val.long_address.c_str();
         if (!val.barcode.empty()) {
           node["barcode"] = val.barcode.c_str();
         }
@@ -630,14 +689,24 @@ void loop() {
         }
 
         // Update persistent node table with all records from this frame
+        bool changed = false;
+        std::vector<uint8_t> blob;
         {
           std::lock_guard<std::mutex> lock(dataMutex);
           for (const auto &entry : nodeTableFrame->nodes) {
             NodeInfo &info = persistentNodeTable[entry.pv_node_id];
             info.pv_node_id = entry.pv_node_id;
-            info.barcode = entry.barcode;
+            if (info.long_address != entry.barcode) {
+              info.long_address = entry.barcode;
+              info.barcode = tigoBarcodeFromHex(entry.barcode);
+              changed = true;
+            }
           }
+          if (changed)
+            blob = nodeMapBlob();
         }
+        if (changed)
+          saveNodeMap(blob);
       }
       break;
     }

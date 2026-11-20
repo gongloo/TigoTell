@@ -76,6 +76,11 @@ public:
   std::string toString() const override;
 };
 
+// Tigo barcode (e.g. "4-9A57A2L") for an 8-byte long address.
+std::string tigoBarcode(const uint8_t *longAddress);
+// Same, for a long address given as 16 hex digits; "" if malformed.
+std::string tigoBarcodeFromHex(const std::string &hex);
+
 // Class for handling the byte stream and producing frames
 class TigoParser {
 public:

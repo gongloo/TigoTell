@@ -270,6 +270,49 @@ bool TigoParser::verifyCRC(const std::vector<uint8_t> &frame) {
   return receivedCRC == calculatedCRC;
 }
 
+// CRC-4 (polynomial 0x3, initial value 0x2) over the long address, written
+// with Tigo's alternate digits. See taptap docs/protocol.md, "Barcodes".
+std::string tigoBarcode(const uint8_t *a) {
+  uint8_t crc = 0x2;
+  for (int i = 0; i < 8; i++) {
+    uint8_t c = a[i] ^ (crc << 4);
+    for (int b = 0; b < 8; b++)
+      c = (c & 0x80) ? ((c << 1) ^ 0x30) : (c << 1);
+    crc = c >> 4;
+  }
+  static const char *hex = "0123456789ABCDEF";
+  std::string out;
+  out += hex[a[3] >> 4];
+  out += '-';
+  bool skipping = true;
+  for (int i = 3; i < 8; i++) {
+    for (int half = (i == 3 ? 1 : 0); half < 2; half++) {
+      uint8_t nibble = half == 0 ? a[i] >> 4 : a[i] & 0x0F;
+      if (skipping && nibble == 0)
+        continue;
+      skipping = false;
+      out += hex[nibble];
+    }
+  }
+  out += "GHJKLMNPRSTVWXYZ"[crc];
+  return out;
+}
+
+std::string tigoBarcodeFromHex(const std::string &hex) {
+  if (hex.size() != 16)
+    return "";
+  uint8_t bytes[8];
+  for (int i = 0; i < 8; i++) {
+    char *end = nullptr;
+    std::string part = hex.substr(i * 2, 2);
+    long v = strtol(part.c_str(), &end, 16);
+    if (end != part.c_str() + 2)
+      return "";
+    bytes[i] = static_cast<uint8_t>(v);
+  }
+  return tigoBarcode(bytes);
+}
+
 void TigoParser::processFrame(const std::vector<uint8_t> &frame) {
   if (!verifyCRC(frame)) {
     if (ignoreFirstCrcError) {
@@ -469,7 +512,10 @@ void TigoParser::parseManagementPayload(const std::vector<uint8_t> &payload) {
         ss << std::setw(2) << (int)payload[pos + j];
       entry.barcode = ss.str();
 
-      entry.pv_node_id = (payload[pos + 8] << 8) | payload[pos + 9];
+      // Node tables mark entries with bit 0x8000 (meaning undocumented);
+      // power reports and announcements use the same ID without it.
+      entry.pv_node_id =
+          ((payload[pos + 8] << 8) | payload[pos + 9]) & 0x7FFF;
       entries.push_back(entry);
 
       pos += 10;
