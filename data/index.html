@@ -310,6 +310,20 @@
       color: var(--danger);
     }
 
+    .health-alert {
+      padding: 1rem 1.25rem;
+      margin-bottom: 1.5rem;
+      border-color: rgba(234, 179, 8, 0.45);
+      color: var(--warning);
+      font-size: 0.9rem;
+      line-height: 1.5;
+    }
+
+    .health-alert strong {
+      display: block;
+      margin-bottom: 0.25rem;
+    }
+
     .tap-card .wide {
       grid-column: 1 / -1;
     }
@@ -355,6 +369,8 @@
         </a>
       </div>
     </header>
+
+    <div class="card health-alert" id="health-alert" style="display: none;"></div>
 
     <section>
       <div class="stats-grid">
@@ -419,6 +435,12 @@
     <section id="tap-section" style="display: none;">
       <h2>Gateways (TAP)</h2>
       <div class="power-grid" id="tap-grid"></div>
+    </section>
+    <section id="health-section" style="display: none;">
+      <h2>Device Health</h2>
+      <div class="power-grid">
+        <div class="card power-card tap-card" id="health-card"></div>
+      </div>
     </section>
     <section>
       <h2>Discovery Registry</h2>
@@ -637,6 +659,50 @@
                         </div>
                     </div>`;
         }).join('');
+
+        // Update device health
+        const sys = data.system;
+        document.getElementById('health-section').style.display = sys ? '' : 'none';
+        if (sys) {
+          const kb = (b) => b === undefined ? '–' : `${(b / 1024).toFixed(0)} KB`;
+          const dur = (s) => s === undefined ? '–'
+            : s >= 86400 ? `${Math.floor(s / 86400)}d ${Math.floor((s % 86400) / 3600)}h`
+              : s >= 3600 ? `${Math.floor(s / 3600)}h ${Math.floor((s % 3600) / 60)}m`
+                : `${Math.floor(s / 60)}m ${s % 60}s`;
+          const m = (label, value, wide) => `
+                <div class="metric${wide ? ' wide' : ''}">
+                  <span class="metric-label">${label}</span>
+                  <span class="metric-value">${value}</span>
+                </div>`;
+          const prev = sys.previous_run;
+          const w = sys.wifi || {};
+          document.getElementById('health-card').innerHTML = `
+              <div class="card-header">
+                <span class="node-id">${esc(data.version || '')}</span>
+                <span class="tap-state ${w.connected ? 'ok' : 'offline'}">${w.connected ? 'WiFi ' + w.rssi + ' dBm' : 'WiFi down'}</span>
+              </div>
+              <div class="card-body">
+                ${m('Last restart', esc(sys.reset_reason), true)}
+                ${prev ? m('Previous run', `${dur(prev.uptime_s)}, lowest free memory ${kb(prev.heap_min)}${prev.restart_cause ? ', ' + esc(prev.restart_cause) : ''}`, true) : ''}
+                ${m('Free memory', `${kb(sys.heap_free)} (min ${kb(sys.heap_min)})`)}
+                ${m('Largest block', `${kb(sys.heap_max_block)} (min ${kb(sys.heap_max_block_min)})`)}
+                ${m('WiFi drops', `${w.disconnects ?? 0}${w.last_disconnect_reason ? ' (last reason ' + w.last_disconnect_reason + ')' : ''}`)}
+                ${m('Connected for', w.connected ? dur(w.connected_s) : '–')}
+                ${sys.crash_count ? m(`Crash reports (${sys.crash_count})`, `<span class="barcode">${esc(sys.last_crash)}</span>`, true) : ''}
+              </div>`;
+
+          const alertEl = document.getElementById('health-alert');
+          const bad = /Crash|watchdog|Brownout|glitch|lockup/i.test(sys.reset_reason || '');
+          const healed = prev && prev.restart_cause;
+          if (bad || healed) {
+            alertEl.style.display = '';
+            alertEl.innerHTML = `<strong>TigoTell restarted ${dur(sys.uptime_s)} ago: ${esc(healed ? prev.restart_cause : sys.reset_reason)}</strong>`
+              + (prev ? `The previous run lasted ${dur(prev.uptime_s)}. ` : '')
+              + 'Details under Device Health below.';
+          } else {
+            alertEl.style.display = 'none';
+          }
+        }
 
         // Update Discovery Table
         const discoveryTable = document.getElementById('discovery-table');

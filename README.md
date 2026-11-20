@@ -22,6 +22,8 @@ Non-intrusively monitors communication between Tigo Cloud Connect Advanced (CCA)
   Streams parsed telemetry directly to an InfluxDB instance over UDP line-protocol.
 - **TAP Status**  
   Tracks each Tigo Access Point on the bus: polls answered, buffer levels, modules heard and their signal, plus barcode, firmware and radio channel when the CCA queries them.
+- **Device Health & Self-Healing**  
+  Restart reason, crash reports, memory and WiFi diagnostics; loop watchdog, WiFi reconnect and restart on persistent memory exhaustion.
 - ️**REST APIs**  
   Live JSON endpoints for power data, system discovery statistics, and parser health.
 - **WebSerial Debugging**  
@@ -132,6 +134,14 @@ Once connected to your local network, you can access the device in your browser 
 ### Barcodes
 
 Barcodes are shown in Tigo's label format (e.g. `4-EF82C4J`, as printed on the optimizer and shown in the Tigo app) on the power cards and in the registry; `/json` additionally lists the raw 64-bit `long_address`. The CCA's node table marks module IDs with bit 0x8000 while power reports use the plain ID; TigoTell strips the bit so both match. The module-ID-to-barcode map is kept in NVS, because the CCA only sends its node table occasionally (mostly while modules are being added).
+
+### Device health
+
+The dashboard's **Device Health** section shows why TigoTell last restarted (power on, crash, watchdog, brownout, or a deliberate self-healing restart), how long the previous run lasted and its lowest free memory, current memory, WiFi signal and drops, and the most recent crash report. After an unexpected restart a notice appears at the top of the dashboard. `/json` includes the same data under `system` (plus free NVS entries).
+
+Self-healing: a watchdog restarts TigoTell if the main loop stalls for 5 s; after 1 minute without WiFi it reconnects, after 10 minutes it restarts (not while someone uses the setup portal); it also restarts if the largest free memory block stays below 10 KB for a minute.
+
+Crash reports contain a backtrace of addresses. `tools/decode-crash.py firmware.elf "<crash text>"` (needs `pip install pyelftools`) turns them into function names; use the `firmware.elf` of the exact version that crashed.
 
 ### TAP status
 

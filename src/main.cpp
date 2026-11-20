@@ -13,6 +13,7 @@
 #include <memory>
 #include <mutex>
 
+#include "Health.h"
 #include "RepoInfo.h"
 #include "TaskLog.h"
 #include "PowerStatsAccumulator.h"
@@ -21,6 +22,7 @@
 #include <GithubReleaseOTA.h>
 #include <Preferences.h>
 #include <esp_wifi.h>
+#include <nvs.h>
 
 // Increase to help prevent overflow (CRC errors result).
 constexpr size_t kRxBufferSize = 1024;
@@ -338,6 +340,7 @@ std::map<uint16_t, PowerStatsAccumulator> nodeAccumulators;
 bool isElegantOtaStarted = false;
 
 void setup() {
+  health::begin();
   loadSettings();
   loadNodeMap();
 
@@ -402,6 +405,12 @@ void setup() {
       root["fs_version"] = fsVersion;
       root["build_timestamp"] = BUILD_TIMESTAMP;
       root["uptime_ms"] = esp_timer_get_time() / 1000;
+
+      JsonObject jsonSys = root["system"].to<JsonObject>();
+      health::toJson(jsonSys);
+      nvs_stats_t nvsStats = {};
+      if (nvs_get_stats(NULL, &nvsStats) == ESP_OK)
+        jsonSys["nvs_free_entries"] = nvsStats.available_entries;
 
       // Power Data (Latest Metrics)
       JsonArray powerNodes = root["power"].to<JsonArray>();
@@ -616,10 +625,14 @@ void setup() {
     });
   }
   server.begin();
+
+  // Restart (instead of hanging silently) if loop() ever stalls for 5 s.
+  enableLoopWDT();
 }
 
 void loop() {
   taskLog.flush();
+  health::loop(isUpdatingOTA);
   netWizard.loop();
   if (isElegantOtaStarted) {
     ElegantOTA.loop();

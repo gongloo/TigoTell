@@ -131,5 +131,6 @@ jobs:
             "$BUILD_DIR/littlefs.bin" \
             "$BUILD_DIR/tigotell-factory.bin" \
             "$BUILD_DIR/manifest.json" \
+            "$BUILD_DIR/firmware.elf" \
             --title "Release v${{ steps.get_version.outputs.VERSION }}" \
             --generate-notes
