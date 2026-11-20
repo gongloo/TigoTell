@@ -426,9 +426,17 @@
       return address.toString(16).toUpperCase().padStart(2, '0');
     }
 
+    let fetching = false;
+
     async function fetchData() {
+      // One request at a time, with a timeout: a request the device never
+      // answers must not block the browser's few connections to it.
+      if (fetching) return;
+      fetching = true;
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), 4500);
       try {
-        const response = await fetch('/json');
+        const response = await fetch('/json', { signal: ctrl.signal });
         if (!response.ok) throw new Error('Network response was not ok');
         const data = await response.json();
 
@@ -564,6 +572,9 @@
         const statusText = document.getElementById('status-text');
         statusBadge.className = 'header-pill status-disconnected';
         statusText.innerText = 'Disconnected';
+      } finally {
+        clearTimeout(timer);
+        fetching = false;
       }
     }
 

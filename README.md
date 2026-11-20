@@ -38,7 +38,7 @@ Non-intrusively monitors communication between Tigo Cloud Connect Advanced (CCA)
 - **Communications Wiring**  
   Connection to the RS485 A and B lines between the Tigo CCA and TAP.
 - **Power**  
-  Can usually be run off the same power supply as the Tigo CCA.
+  Can usually be run off the same power supply as the Tigo CCA. With a 12 V / 1 A supply the budget gets tight while the CCA is busy (e.g. during module discovery); Tigo recommends 24 V. Do not power the board from the screw terminal and USB at the same time.
 
 ### Software / Dependencies
 
@@ -124,7 +124,7 @@ Once connected to your local network, you can access the device in your browser 
 - **Settings**: Click the **Cog Icon** on the dashboard to configure Hardware Pins (TX, RX, EN), InfluxDB host/port, and reporting intervals.
 - **`/json`**: Returns a snapshot of all discovered nodes and their latest parsed data, including system stats.
 - **`/version`**: Returns the current firmware version and build timestamp.
-- **`/update`**: Access the ElegantOTA firmware update portal, if enabled.
+- **`/update`**: Access the ElegantOTA firmware update portal. It is enabled once OTA username and password are set in the settings and the device has been rebooted; until then the page explains this.
 - **`/webserial`**: View live serial log output.
 
 ### Home Assistant
@@ -138,4 +138,9 @@ This project stands on the shoulders of the incredible reverse-engineering work 
 - **[willglynn/taptap](https://github.com/willglynn/taptap)**: Excellent documentation and implementation of the Tigo wireless protocol.
 - **[tictactom/tigo_server](https://github.com/tictactom/tigo_server)**: Fundamental research and parsing logic for the Tigo CCA/TAP communications.
 - **Google Gemini**: For AI pair-programming assistance in building and structuring this project!
+- **Anthropic Claude**: AI pair-programming assistance for later extensions and fixes.
 - **[Google Material Design Icons](https://fonts.google.com/icons)**: Used for the web dashboard visualization (licensed under the Apache License 2.0).
+
+## 📄 License
+
+MIT, see [LICENSE](LICENSE); the original copyright notice is retained. The firmware links third-party libraries under their own licenses, including AGPL-3.0 and LGPL-3.0 libraries; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
