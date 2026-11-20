@@ -14,4 +14,4 @@ TigoTell's own source code is MIT-licensed (see [LICENSE](LICENSE)). The firmwar
 | [Arduino core for ESP32](https://github.com/espressif/arduino-esp32) / ESP-IDF | LGPL-2.1 / Apache-2.0 |
 | [Material Design Icons](https://fonts.google.com/icons) (dashboard) | Apache-2.0 |
 
-Because the firmware includes AGPL-3.0 libraries, anyone distributing firmware binaries should make the complete corresponding source available, as this repository does. Protocol knowledge follows the documentation of [taptap](https://github.com/willglynn/taptap) (MIT, © Will Glynn).
+Because the firmware includes AGPL-3.0 libraries, anyone distributing firmware binaries should make the complete corresponding source available, as this repository does. Protocol knowledge, the barcode check-digit algorithm and node-table details follow the documentation of [taptap](https://github.com/willglynn/taptap) (MIT, © Will Glynn).

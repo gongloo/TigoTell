@@ -127,6 +127,10 @@ Once connected to your local network, you can access the device in your browser 
 - **`/update`**: Access the ElegantOTA firmware update portal. It is enabled once OTA username and password are set in the settings and the device has been rebooted; until then the page explains this.
 - **`/webserial`**: View live serial log output.
 
+### Barcodes
+
+Barcodes are shown in Tigo's label format (e.g. `4-EF82C4J`, as printed on the optimizer and shown in the Tigo app) on the power cards and in the registry; `/json` additionally lists the raw 64-bit `long_address`. The CCA's node table marks module IDs with bit 0x8000 while power reports use the plain ID; TigoTell strips the bit so both match. The module-ID-to-barcode map is kept in NVS, because the CCA only sends its node table occasionally (mostly while modules are being added).
+
 ### Home Assistant
 
 [miketkf/ha-tigotell](https://github.com/miketkf/ha-tigotell) provides an integration to connect your TigoTell to Home Assistant.
@@ -135,7 +139,7 @@ Once connected to your local network, you can access the device in your browser 
 
 This project stands on the shoulders of the incredible reverse-engineering work done by the community. A massive thank you to the following projects which provided the foundation for decoding the Tigo protocols:
 
-- **[willglynn/taptap](https://github.com/willglynn/taptap)**: Excellent documentation and implementation of the Tigo wireless protocol.
+- **[willglynn/taptap](https://github.com/willglynn/taptap)**: Excellent documentation and implementation of the Tigo wireless protocol. TigoTell's barcode format and node-table handling follow its protocol documentation.
 - **[tictactom/tigo_server](https://github.com/tictactom/tigo_server)**: Fundamental research and parsing logic for the Tigo CCA/TAP communications.
 - **Google Gemini**: For AI pair-programming assistance in building and structuring this project!
 - **Anthropic Claude**: AI pair-programming assistance for later extensions and fixes.

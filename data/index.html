@@ -244,6 +244,17 @@
       content: 'Updated: ';
     }
 
+    .card-barcode {
+      font-family: monospace;
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: var(--text);
+      margin-left: 0.6rem;
+      padding: 0.1rem 0.4rem;
+      border-radius: 0.25rem;
+      background: rgba(255, 255, 255, 0.07);
+    }
+
     .barcode-fragment {
       font-family: monospace;
     }
@@ -496,6 +507,7 @@
         // Update Power Grid
         const powerGrid = document.getElementById('power-grid');
         let totalWattage = 0;
+        const barcodeById = new Map((data.nodes || []).filter(n => n.barcode).map(n => [n.pv_node_id, n.barcode]));
         powerGrid.innerHTML = data.power.map(p => {
           const lastUpdated = p.last_updated ? p.last_updated : 0;
           const ageSeconds = (data.uptime_ms - lastUpdated) / 1000;
@@ -513,7 +525,7 @@
           return `
                     <div class="card power-card ${isStale ? 'stale' : ''}">
                         <div class="card-header">
-                            <span class="node-id">${p.pv_node_id}</span>
+                            <span class="node-id">${p.pv_node_id}${barcodeById.has(p.pv_node_id) ? `<span class="card-barcode">${barcodeById.get(p.pv_node_id)}</span>` : ''}</span>
                             <span class="address">${formatAddress(p.address)}</span>
                         </div>
                         <div class="card-body">
