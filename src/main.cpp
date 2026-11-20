@@ -13,6 +13,7 @@
 #include <memory>
 #include <mutex>
 
+#include "RepoInfo.h"
 #include "TaskLog.h"
 #include "PowerStatsAccumulator.h"
 #include "TigoProtocol.h"
@@ -114,7 +115,7 @@ void onOTAEnd(bool success) {
 
 void runOtaUpdate(void *parameter) {
   onOTAStart();
-  GithubReleaseOTA ota("gongloo", "TigoTell");
+  GithubReleaseOTA ota(TIGOTELL_REPO_OWNER, TIGOTELL_REPO_NAME);
   GithubRelease release = ota.getLatestRelease();
   if (release.tag_name != NULL) {
     // Normalize versions for comparison
@@ -400,7 +401,7 @@ void setup() {
   server.on("/api/update/check", HTTP_GET, [](AsyncWebServerRequest *request) {
     // We do the check in-request, which might be slow.
     // GitHub API can take a second or two.
-    GithubReleaseOTA ota("gongloo", "TigoTell");
+    GithubReleaseOTA ota(TIGOTELL_REPO_OWNER, TIGOTELL_REPO_NAME);
 
     // Optional: Set insecure if certificates are a pain, but let's try defaults
     // first ota.setInsecure();
