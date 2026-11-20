@@ -13,12 +13,16 @@
 #include <memory>
 #include <mutex>
 
+#include "Health.h"
+#include "RepoInfo.h"
+#include "TaskLog.h"
 #include "PowerStatsAccumulator.h"
 #include "TigoProtocol.h"
 #include "Version.h"
 #include <GithubReleaseOTA.h>
 #include <Preferences.h>
 #include <esp_wifi.h>
+#include <nvs.h>
 
 // Increase to help prevent overflow (CRC errors result).
 constexpr size_t kRxBufferSize = 1024;
@@ -99,21 +103,21 @@ volatile bool isUpdatingOTA = false;
 
 void onOTAStart() {
   isUpdatingOTA = true;
-  WebSerial.println("OTA Update Started. Pausing reads from Tigo...");
+  taskLog.println("OTA Update Started. Pausing reads from Tigo...");
 }
 
 void onOTAEnd(bool success) {
   isUpdatingOTA = false;
   if (success) {
-    WebSerial.println("OTA Update Successful!");
+    taskLog.println("OTA Update Successful!");
   } else {
-    WebSerial.println("OTA Update Failed!");
+    taskLog.println("OTA Update Failed!");
   }
 }
 
 void runOtaUpdate(void *parameter) {
   onOTAStart();
-  GithubReleaseOTA ota("gongloo", "TigoTell");
+  GithubReleaseOTA ota(TIGOTELL_REPO_OWNER, TIGOTELL_REPO_NAME);
   GithubRelease release = ota.getLatestRelease();
   if (release.tag_name != NULL) {
     // Normalize versions for comparison
@@ -125,22 +129,22 @@ void runOtaUpdate(void *parameter) {
     bool fwNeedsUpdate = (fwCurrent != latest);
     bool fsNeedsUpdate = (fsVersion != latest);
 
-    WebSerial.printf("Versions - Current FW: %s, FS: %s | Latest: %s\n",
-                     fwCurrent.c_str(), fsVersion.c_str(), latest.c_str());
+    taskLog.printf("Versions - Current FW: %s, FS: %s | Latest: %s\n",
+                   fwCurrent.c_str(), fsVersion.c_str(), latest.c_str());
 
     if (fwNeedsUpdate || fsNeedsUpdate) {
       // 1. Unmount filesystem for safety
-      WebSerial.printf("Starting selective GitHub Update to v%s...",
-                       latest.c_str());
+      taskLog.printf("Starting selective GitHub Update to v%s...",
+                     latest.c_str());
       delay(100);
       yield();
 
       // 2. Flash Firmware if out of date (Priority)
       if (fwNeedsUpdate) {
         if (ota.flashFirmware(release, "firmware.bin") == OTA_SUCCESS) {
-          WebSerial.println("Firmware updated successfully.");
+          taskLog.println("Firmware updated successfully.");
         } else {
-          WebSerial.println("Firmware update FAILED or asset missing.");
+          taskLog.println("Firmware update FAILED or asset missing.");
         }
         delay(500);
         yield();
@@ -150,9 +154,9 @@ void runOtaUpdate(void *parameter) {
       if (fsNeedsUpdate) {
         LittleFS.end();
         if (ota.flashSpiffs(release, "littlefs.bin") == OTA_SUCCESS) {
-          WebSerial.println("FileSystem updated successfully.");
+          taskLog.println("FileSystem updated successfully.");
         } else {
-          WebSerial.println("FileSystem update FAILED or asset missing.");
+          taskLog.println("FileSystem update FAILED or asset missing.");
         }
         delay(500);
         yield();
@@ -160,16 +164,16 @@ void runOtaUpdate(void *parameter) {
 
       ota.freeRelease(release);
       onOTAEnd(true);
-      WebSerial.println("Update sequence complete. Rebooting...");
+      taskLog.println("Update sequence complete. Rebooting...");
       delay(3000);
       ESP.restart();
     } else {
-      WebSerial.println("Everything is already up to date.");
+      taskLog.println("Everything is already up to date.");
       ota.freeRelease(release);
       onOTAEnd(true);
     }
   } else {
-    WebSerial.println("Failed to fetch latest release for update.");
+    taskLog.println("Failed to fetch latest release for update.");
     onOTAEnd(false);
   }
   vTaskDelete(NULL);
@@ -179,6 +183,76 @@ AsyncWebServer server(80);
 NetWizard netWizard(&server);
 
 unsigned long lastStatsTime = 0;
+
+// A TAP that sent nothing for this long counts as offline.
+constexpr uint32_t kTapOfflineMs = 60000;
+// Modules heard through a TAP within this window count as connected to it.
+constexpr uint32_t kTapModuleWindowMs = 300000;
+
+String tapHexId(uint16_t id) {
+  char buf[8];
+  snprintf(buf, sizeof(buf), "%04X", id);
+  return buf;
+}
+
+// "ok", "degraded" (answers fewer than 90 % of recent polls) or "offline".
+const char *tapState(const TigoGatewayStatus &gw, uint32_t now) {
+  if (!gw.seen || now - gw.lastSeenMs > kTapOfflineMs)
+    return "offline";
+  int pct = gw.recentAnsweredPercent();
+  return pct >= 0 && pct < 90 ? "degraded" : "ok";
+}
+
+void tapToJson(JsonObject o, const TigoGatewayStatus &gw, uint32_t now) {
+  o["id"] = tapHexId(gw.id);
+  o["state"] = tapState(gw, now);
+  if (gw.seen)
+    o["last_seen_s"] = (now - gw.lastSeenMs) / 1000;
+  o["polls"] = gw.polls;
+  o["answered"] = gw.answered;
+  o["missed"] = gw.missed;
+  int pct = gw.recentAnsweredPercent();
+  if (pct >= 0)
+    o["recent_answered_pct"] = pct;
+  if (gw.rxBuffersUsed >= 0) {
+    o["rx_buffers_used"] = gw.rxBuffersUsed;
+    o["rx_buffers_max"] = gw.rxBuffersMax;
+  }
+  if (gw.txBuffersFree >= 0) {
+    o["tx_buffers_free"] = gw.txBuffersFree;
+    if (gw.txBuffersMin >= 0)
+      o["tx_buffers_min"] = gw.txBuffersMin;
+  }
+  if (gw.slotCounter >= 0)
+    o["slot_counter"] = gw.slotCounter;
+  o["packets"] = gw.packets;
+  o["power_reports"] = gw.powerReports;
+  int modules = 0;
+  long rssiSum = 0;
+  int rssiMin = 999;
+  for (auto const &[node, seen] : gw.nodes) {
+    if (now - seen.lastMs > kTapModuleWindowMs)
+      continue;
+    modules++;
+    rssiSum += seen.rssi;
+    rssiMin = std::min(rssiMin, seen.rssi);
+  }
+  o["modules"] = modules;
+  if (modules > 0) {
+    o["rssi_avg"] = static_cast<int>(rssiSum / modules);
+    o["rssi_min"] = rssiMin;
+  }
+  auto bc = parser.getGatewayBarcodes().find(gw.id);
+  if (bc != parser.getGatewayBarcodes().end())
+    o["barcode"] = bc->second.c_str();
+  if (!gw.version.empty())
+    o["version"] = gw.version.c_str();
+  if (gw.radioChannel >= 0)
+    o["radio_channel"] = gw.radioChannel;
+  if (gw.panId >= 0)
+    o["pan_id"] = tapHexId(gw.panId);
+}
+
 
 // Store the latest power frame and timestamp for each node
 struct PowerNodeData {
@@ -191,13 +265,69 @@ std::map<uint16_t, PowerNodeData> nodePowerData;
 struct NodeInfo {
   uint16_t address = 0;
   uint16_t pv_node_id = 0;
-  std::string barcode = "";
+  std::string barcode = "";      // Tigo format, e.g. "4-EF82C4J"
+  std::string long_address = ""; // 16 hex digits from the node table
   uint32_t barcode_fragment = 0;
   uint64_t last_seen = 0;
 };
 
 // Persistent registry of all discovered nodes
 std::map<uint16_t, NodeInfo> persistentNodeTable;
+
+// The CCA sends its node table (module ID -> long address) rarely, mostly
+// while modules are being added. Keep the mapping in NVS so it survives
+// restarts. Format: version byte, then per node 2 bytes ID + 8 bytes address.
+constexpr size_t kNodeMapMaxNodes = 200;
+
+void saveNodeMap(const std::vector<uint8_t> &blob) {
+  Preferences prefs; // own handle: loop() and web handlers may overlap
+  if (!prefs.begin("nodemap", false))
+    return;
+  bool ok = prefs.putBytes("v1", blob.data(), blob.size()) == blob.size();
+  prefs.end();
+  taskLog.printf("Node map %s: %u modules", ok ? "saved" : "NOT saved",
+                 (unsigned)((blob.size() - 1) / 10));
+}
+
+void loadNodeMap() {
+  Preferences prefs;
+  if (!prefs.begin("nodemap", true))
+    return;
+  size_t len = prefs.getBytesLength("v1");
+  std::vector<uint8_t> blob(len);
+  if (len > 0)
+    prefs.getBytes("v1", blob.data(), len);
+  prefs.end();
+  if (len < 1 || blob[0] != 1)
+    return;
+  for (size_t pos = 1; pos + 10 <= len; pos += 10) {
+    uint16_t id = (blob[pos] << 8) | blob[pos + 1];
+    char hex[17];
+    for (int i = 0; i < 8; i++)
+      snprintf(hex + i * 2, 3, "%02X", blob[pos + 2 + i]);
+    NodeInfo &info = persistentNodeTable[id];
+    info.pv_node_id = id;
+    info.long_address = hex;
+    info.barcode = tigoBarcodeFromHex(hex);
+  }
+}
+
+// Builds the blob from the registry; call with dataMutex held.
+std::vector<uint8_t> nodeMapBlob() {
+  std::vector<uint8_t> blob{1};
+  for (auto const &[id, info] : persistentNodeTable) {
+    if (info.long_address.size() != 16)
+      continue;
+    if ((blob.size() - 1) / 10 >= kNodeMapMaxNodes)
+      break;
+    blob.push_back(id >> 8);
+    blob.push_back(id & 0xFF);
+    for (int i = 0; i < 8; i++)
+      blob.push_back(strtol(info.long_address.substr(i * 2, 2).c_str(),
+                            nullptr, 16));
+  }
+  return blob;
+}
 
 // Store the last update time for each node
 std::map<uint16_t, unsigned long> lastUpdateTimes;
@@ -210,7 +340,9 @@ std::map<uint16_t, PowerStatsAccumulator> nodeAccumulators;
 bool isElegantOtaStarted = false;
 
 void setup() {
+  health::begin();
   loadSettings();
+  loadNodeMap();
 
   Serial.begin(115200);
   pinMode(appConfig.enPin, OUTPUT);
@@ -274,6 +406,12 @@ void setup() {
       root["build_timestamp"] = BUILD_TIMESTAMP;
       root["uptime_ms"] = esp_timer_get_time() / 1000;
 
+      JsonObject jsonSys = root["system"].to<JsonObject>();
+      health::toJson(jsonSys);
+      nvs_stats_t nvsStats = {};
+      if (nvs_get_stats(NULL, &nvsStats) == ESP_OK)
+        jsonSys["nvs_free_entries"] = nvsStats.available_entries;
+
       // Power Data (Latest Metrics)
       JsonArray powerNodes = root["power"].to<JsonArray>();
       for (auto const &[key, val] : nodePowerData) {
@@ -287,7 +425,17 @@ void setup() {
         node["temperature"] = frame->temperature;
         node["duty_cycle"] = frame->duty_cycle;
         node["rssi"] = frame->rssi;
+        if (frame->gateway_id)
+          node["gateway"] = tapHexId(frame->gateway_id);
         node["last_updated"] = val.last_updated;
+      }
+
+      // TAPs (gateways) as seen on the bus
+      JsonArray taps = root["taps"].to<JsonArray>();
+      uint32_t nowMs = millis();
+      for (auto const &[id, gw] : parser.getGateways()) {
+        if (gw.seen || gw.polls > 0)
+          tapToJson(taps.add<JsonObject>(), gw, nowMs);
       }
 
       // Discovery Data (Persistent Map)
@@ -296,6 +444,8 @@ void setup() {
         JsonObject node = discoverNodes.add<JsonObject>();
         node["address"] = val.address;
         node["pv_node_id"] = val.pv_node_id;
+        if (!val.long_address.empty())
+          node["long_address"] = val.long_address.c_str();
         if (!val.barcode.empty()) {
           node["barcode"] = val.barcode.c_str();
         }
@@ -327,6 +477,7 @@ void setup() {
     doc["measurementName"] = appConfig.measurementName;
     doc["minSecondsNodeUpdates"] = appConfig.minSecondsNodeUpdates;
     doc["minSecondsNodeTableUpdates"] = appConfig.minSecondsNodeTableUpdates;
+    doc["otaEnabled"] = isElegantOtaStarted;
 
     AsyncResponseStream *response =
         request->beginResponseStream("application/json");
@@ -398,7 +549,7 @@ void setup() {
   server.on("/api/update/check", HTTP_GET, [](AsyncWebServerRequest *request) {
     // We do the check in-request, which might be slow.
     // GitHub API can take a second or two.
-    GithubReleaseOTA ota("gongloo", "TigoTell");
+    GithubReleaseOTA ota(TIGOTELL_REPO_OWNER, TIGOTELL_REPO_NAME);
 
     // Optional: Set insecure if certificates are a pain, but let's try defaults
     // first ota.setInsecure();
@@ -414,7 +565,7 @@ void setup() {
       doc["latest_version"] = latest;
       String current = String(VERSION);
 
-      WebSerial.printf(
+      taskLog.printf(
           "[UpdateCheck] FW Current: %s, FS Current: %s, Github Latest: %s\n",
           current.c_str(), fsVersion.c_str(), latest.c_str());
 
@@ -457,11 +608,31 @@ void setup() {
   } else {
     isElegantOtaStarted = false;
     Serial.println("ElegantOTA disabled (no credentials).");
+    // Explain instead of answering "Not found".
+    server.on("/update", HTTP_GET, [](AsyncWebServerRequest *request) {
+      request->send(
+          200, "text/html",
+          "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"UTF-8\">"
+          "<meta name=\"viewport\" content=\"width=device-width, "
+          "initial-scale=1.0\"><title>Firmware update disabled</title>"
+          "<link rel=\"stylesheet\" href=\"/style.css\"></head><body>"
+          "<div class=\"container\"><header><h1>Firmware update disabled"
+          "</h1></header><p>The firmware upload page needs a username and "
+          "password.</p><p>Set them under <a href=\"/config.html#ota\">"
+          "Settings &rsaquo; OTA Authentication</a>, save, then reboot the "
+          "device.</p><p><a href=\"/\">Back to dashboard</a></p></div>"
+          "</body></html>");
+    });
   }
   server.begin();
+
+  // Restart (instead of hanging silently) if loop() ever stalls for 5 s.
+  enableLoopWDT();
 }
 
 void loop() {
+  taskLog.flush();
+  health::loop(isUpdatingOTA);
   netWizard.loop();
   if (isElegantOtaStarted) {
     ElegantOTA.loop();
@@ -489,6 +660,7 @@ void loop() {
           bytesToRead); // Direct FIFO extraction, skips Stream::timedRead()
       if (count > 0) {
         std::lock_guard<std::mutex> lock(dataMutex);
+        parser.setTime(millis());
         parser.pushBytes(serialBuf, count);
       }
     }
@@ -611,14 +783,24 @@ void loop() {
         }
 
         // Update persistent node table with all records from this frame
+        bool changed = false;
+        std::vector<uint8_t> blob;
         {
           std::lock_guard<std::mutex> lock(dataMutex);
           for (const auto &entry : nodeTableFrame->nodes) {
             NodeInfo &info = persistentNodeTable[entry.pv_node_id];
             info.pv_node_id = entry.pv_node_id;
-            info.barcode = entry.barcode;
+            if (info.long_address != entry.barcode) {
+              info.long_address = entry.barcode;
+              info.barcode = tigoBarcodeFromHex(entry.barcode);
+              changed = true;
+            }
           }
+          if (changed)
+            blob = nodeMapBlob();
         }
+        if (changed)
+          saveNodeMap(blob);
       }
       break;
     }

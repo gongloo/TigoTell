@@ -20,6 +20,10 @@ Non-intrusively monitors communication between Tigo Cloud Connect Advanced (CCA)
   Configure hardware pins, InfluxDB details, and reporting intervals via Web UI.
 - **InfluxDB Integration**  
   Streams parsed telemetry directly to an InfluxDB instance over UDP line-protocol.
+- **TAP Status**  
+  Tracks each Tigo Access Point on the bus: polls answered, buffer levels, modules heard and their signal, plus barcode, firmware and radio channel when the CCA queries them.
+- **Device Health & Self-Healing**  
+  Restart reason, crash reports, memory and WiFi diagnostics; loop watchdog, WiFi reconnect and restart on persistent memory exhaustion.
 - ️**REST APIs**  
   Live JSON endpoints for power data, system discovery statistics, and parser health.
 - **WebSerial Debugging**  
@@ -38,7 +42,7 @@ Non-intrusively monitors communication between Tigo Cloud Connect Advanced (CCA)
 - **Communications Wiring**  
   Connection to the RS485 A and B lines between the Tigo CCA and TAP.
 - **Power**  
-  Can usually be run off the same power supply as the Tigo CCA.
+  Can usually be run off the same power supply as the Tigo CCA. With a 12 V / 1 A supply the budget gets tight while the CCA is busy (e.g. during module discovery); Tigo recommends 24 V. Do not power the board from the screw terminal and USB at the same time.
 
 ### Software / Dependencies
 
@@ -124,8 +128,31 @@ Once connected to your local network, you can access the device in your browser 
 - **Settings**: Click the **Cog Icon** on the dashboard to configure Hardware Pins (TX, RX, EN), InfluxDB host/port, and reporting intervals.
 - **`/json`**: Returns a snapshot of all discovered nodes and their latest parsed data, including system stats.
 - **`/version`**: Returns the current firmware version and build timestamp.
-- **`/update`**: Access the ElegantOTA firmware update portal, if enabled.
+- **`/update`**: Access the ElegantOTA firmware update portal. It is enabled once OTA username and password are set in the settings and the device has been rebooted; until then the page explains this.
 - **`/webserial`**: View live serial log output.
+
+### Barcodes
+
+Barcodes are shown in Tigo's label format (e.g. `4-EF82C4J`, as printed on the optimizer and shown in the Tigo app) on the power cards and in the registry; `/json` additionally lists the raw 64-bit `long_address`. The CCA's node table marks module IDs with bit 0x8000 while power reports use the plain ID; TigoTell strips the bit so both match. The module-ID-to-barcode map is kept in NVS, because the CCA only sends its node table occasionally (mostly while modules are being added).
+
+### Device health
+
+The dashboard's **Device Health** section shows why TigoTell last restarted (power on, crash, watchdog, brownout, or a deliberate self-healing restart), how long the previous run lasted and its lowest free memory, current memory, WiFi signal and drops, and the most recent crash report. After an unexpected restart a notice appears at the top of the dashboard. `/json` includes the same data under `system` (plus free NVS entries).
+
+Self-healing: a watchdog restarts TigoTell if the main loop stalls for 5 s; after 1 minute without WiFi it reconnects, after 10 minutes it restarts (not while someone uses the setup portal); it also restarts if the largest free memory block stays below 10 KB for a minute.
+
+Crash reports contain a backtrace of addresses. `tools/decode-crash.py firmware.elf "<crash text>"` (needs `pip install pyelftools`) turns them into function names; use the `firmware.elf` of the exact version that crashed.
+
+### TAP status
+
+The dashboard's **Gateways (TAP)** section lists every TAP the CCA talks to, keyed by its gateway ID. Everything is observed passively:
+
+- **Polls answered**: share of the last 64 receive polls the TAP answered (state *Missing polls* below 90 %, *Offline* after 60 s without a frame). Frames lost to CRC errors on the sniffer also count as missed.
+- **Rx buffers used / Tx buffers free**: the TAP's own buffer status from its responses; a persistently full receive buffer or no free transmit buffers indicate a backlog.
+- **Modules / Avg. module signal**: modules whose reports arrived through this TAP in the last 5 minutes, and their raw RSSI values.
+- **Barcode, firmware, radio channel/PAN**: only exchanged when the CCA enumerates the TAPs (typically when the CCA starts), so they appear after the CCA restarts.
+
+`/json` contains the same data under `taps`, and each power entry names the TAP it came through (`gateway`). Protocol details follow [taptap's documentation](https://github.com/willglynn/taptap/blob/main/docs/protocol.md).
 
 ### Home Assistant
 
@@ -135,7 +162,12 @@ Once connected to your local network, you can access the device in your browser 
 
 This project stands on the shoulders of the incredible reverse-engineering work done by the community. A massive thank you to the following projects which provided the foundation for decoding the Tigo protocols:
 
-- **[willglynn/taptap](https://github.com/willglynn/taptap)**: Excellent documentation and implementation of the Tigo wireless protocol.
+- **[willglynn/taptap](https://github.com/willglynn/taptap)**: Excellent documentation and implementation of the Tigo wireless protocol. TigoTell's TAP status, barcode format and node-table handling follow its protocol documentation.
 - **[tictactom/tigo_server](https://github.com/tictactom/tigo_server)**: Fundamental research and parsing logic for the Tigo CCA/TAP communications.
 - **Google Gemini**: For AI pair-programming assistance in building and structuring this project!
+- **Anthropic Claude**: AI pair-programming assistance for later extensions and fixes.
 - **[Google Material Design Icons](https://fonts.google.com/icons)**: Used for the web dashboard visualization (licensed under the Apache License 2.0).
+
+## 📄 License
+
+MIT, see [LICENSE](LICENSE); the original copyright notice is retained. The firmware links third-party libraries under their own licenses, including AGPL-3.0 and LGPL-3.0 libraries; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
