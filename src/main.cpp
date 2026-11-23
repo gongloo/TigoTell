@@ -873,7 +873,7 @@ void setup() {
         request->_tempObject = nullptr;
 
         if (!upload) {
-          bool nonJson = request->isMultipart() ||
+          bool nonJson = request->multipart() ||
                          request->contentType().startsWith(
                              "application/x-www-form-urlencoded") ||
                          request->params() > 0;
