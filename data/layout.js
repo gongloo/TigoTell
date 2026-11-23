@@ -210,11 +210,13 @@ function setLayout(obj) {
 // Browsers allow only a few parallel connections per device. A request the
 // device never answers must time out, or later requests (and other pages of
 // the device) queue up behind it.
-async function fetchWithTimeout(url, options = {}, ms = 5000) {
+async function fetchWithTimeout(url, options = {}, ms = 5000, parse = 'text') {
   const ctrl = new AbortController();
   const timer = setTimeout(() => ctrl.abort(), ms);
   try {
-    return await fetch(url, { ...options, signal: ctrl.signal });
+    const res = await fetch(url, { ...options, signal: ctrl.signal });
+    const body = parse === 'json' && res.ok ? await res.json() : await res.text();
+    return { res, body };
   } finally {
     clearTimeout(timer);
   }
@@ -232,9 +234,8 @@ async function fetchLive() {
   if (liveBusy) return;
   liveBusy = true;
   try {
-    const res = await fetchWithTimeout('/json', {}, 4500);
+    const { res, body: data } = await fetchWithTimeout('/json', {}, 4500, 'json');
     if (!res.ok) throw new Error(res.statusText);
-    const data = await res.json();
     const nodes = new Map();
     for (const n of data.nodes || []) {
       nodes.set(n.pv_node_id, { id: n.pv_node_id, barcode: n.barcode || '', fresh: false });
@@ -1795,9 +1796,9 @@ function isDirty() {
 async function loadLayout() {
   $('edit-btn').disabled = true;
   for (let attempt = 1; ; attempt++) {
-    let res;
+    let res, text;
     try {
-      res = await fetchWithTimeout('/api/layout', { cache: 'no-store' }, 8000);
+      ({ res, body: text } = await fetchWithTimeout('/api/layout', { cache: 'no-store' }, 8000));
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
     } catch (err) {
       // Never fall back to an empty layout here: saving it would wipe the
@@ -1810,7 +1811,7 @@ async function loadLayout() {
     const max = parseInt(res.headers.get('X-Layout-Max'));
     if (max >= 0) state.maxBytes = max;
     try {
-      setLayout(JSON.parse(await res.text()));
+      setLayout(JSON.parse(text));
     } catch (err) {
       setLayout({ el: [] });
       toast('The layout stored on the device is damaged. Import a backup or start a new one.', true);
@@ -1834,13 +1835,13 @@ async function saveLayout() {
   btn.disabled = true;
   btn.textContent = 'Saving…';
   try {
-    const res = await fetchWithTimeout('/api/layout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: json }, 20000);
+    const { res, body: errText } = await fetchWithTimeout('/api/layout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: json }, 20000);
     const max = parseInt(res.headers.get('X-Layout-Max'));
     if (max >= 0) state.maxBytes = max;
-    if (!res.ok) throw new Error(await res.text());
+    if (!res.ok) throw new Error(errText);
     // Read it back, so "saved" means it really is on the device.
-    const check = await fetchWithTimeout('/api/layout', { cache: 'no-store' }, 8000);
-    if (!check.ok || (await check.text()) !== json) throw new Error('the device returned a different layout when checked');
+    const { res: check, body: checkText } = await fetchWithTimeout('/api/layout', { cache: 'no-store' }, 8000);
+    if (!check.ok || checkText !== json) throw new Error('the device returned a different layout when checked');
     state.saved = json;
     toast('Layout saved');
     setEditing(false);
