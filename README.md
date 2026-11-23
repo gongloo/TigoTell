@@ -103,7 +103,7 @@ Use **pioarduino** or **PlatformIO** to compile and flash the firmware via USB:
 
 If you wish to upload updates over your local network using PlatformIO:
 
-1. Provision your device with WiFi credentials and **set your OTA username/password via the Web UI**.
+1. Provision your device with WiFi credentials, **set your OTA username/password via the Web UI**, and **reboot the device** so the `/update` endpoint is enabled.
 2. **Create the upload configuration**:
    ```bash
    cp platformio_upload.example.ini platformio_upload.ini
