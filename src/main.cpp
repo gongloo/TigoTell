@@ -59,63 +59,61 @@ struct Config {
 
 Config appConfig;
 std::mutex dataMutex;
-Preferences preferences;
 String fsVersion = "unknown";
 
 void loadSettings() {
-  preferences.begin("tigotell", true);
-  appConfig.hostname = preferences.getString("hostname", appConfig.hostname);
-  appConfig.txPin = preferences.getInt("txPin", appConfig.txPin);
-  appConfig.rxPin = preferences.getInt("rxPin", appConfig.rxPin);
-  appConfig.enPin = preferences.getInt("enPin", appConfig.enPin);
-  appConfig.influxHost =
-      preferences.getString("influxHost", appConfig.influxHost);
-  appConfig.influxPort =
-      preferences.getUShort("influxPort", appConfig.influxPort);
+  Preferences prefs;
+  prefs.begin("tigotell", true);
+  appConfig.hostname = prefs.getString("hostname", appConfig.hostname);
+  appConfig.txPin = prefs.getInt("txPin", appConfig.txPin);
+  appConfig.rxPin = prefs.getInt("rxPin", appConfig.rxPin);
+  appConfig.enPin = prefs.getInt("enPin", appConfig.enPin);
+  appConfig.influxHost = prefs.getString("influxHost", appConfig.influxHost);
+  appConfig.influxPort = prefs.getUShort("influxPort", appConfig.influxPort);
   appConfig.pushStatsInterval =
-      preferences.getInt("pushStats", appConfig.pushStatsInterval);
+      prefs.getInt("pushStats", appConfig.pushStatsInterval);
   appConfig.measurementName =
-      preferences.getString("measName", appConfig.measurementName);
+      prefs.getString("measName", appConfig.measurementName);
   appConfig.minSecondsNodeUpdates =
-      preferences.getInt("nodeUpd", appConfig.minSecondsNodeUpdates);
+      prefs.getInt("nodeUpd", appConfig.minSecondsNodeUpdates);
   appConfig.minSecondsNodeTableUpdates =
-      preferences.getInt("tableUpd", appConfig.minSecondsNodeTableUpdates);
-  appConfig.otaUser = preferences.getString("otaUser", appConfig.otaUser);
-  appConfig.otaPass = preferences.getString("otaPass", appConfig.otaPass);
-  appConfig.mqttHost = preferences.getString("mqttHost", appConfig.mqttHost);
-  appConfig.mqttPort = preferences.getUShort("mqttPort", appConfig.mqttPort);
-  appConfig.mqttUser = preferences.getString("mqttUser", appConfig.mqttUser);
-  appConfig.mqttPass = preferences.getString("mqttPass", appConfig.mqttPass);
-  appConfig.mqttTopic = preferences.getString("mqttTopic", appConfig.mqttTopic);
-  appConfig.mqttInterval =
-      preferences.getInt("mqttIntv", appConfig.mqttInterval);
+      prefs.getInt("tableUpd", appConfig.minSecondsNodeTableUpdates);
+  appConfig.otaUser = prefs.getString("otaUser", appConfig.otaUser);
+  appConfig.otaPass = prefs.getString("otaPass", appConfig.otaPass);
+  appConfig.mqttHost = prefs.getString("mqttHost", appConfig.mqttHost);
+  appConfig.mqttPort = prefs.getUShort("mqttPort", appConfig.mqttPort);
+  appConfig.mqttUser = prefs.getString("mqttUser", appConfig.mqttUser);
+  appConfig.mqttPass = prefs.getString("mqttPass", appConfig.mqttPass);
+  appConfig.mqttTopic = prefs.getString("mqttTopic", appConfig.mqttTopic);
+  appConfig.mqttInterval = prefs.getInt("mqttIntv", appConfig.mqttInterval);
   appConfig.mqttDiscovery =
-      preferences.getBool("mqttHaDisc", appConfig.mqttDiscovery);
-  preferences.end();
+      prefs.getBool("mqttHaDisc", appConfig.mqttDiscovery);
+  prefs.end();
 }
 
 void saveSettings(const Config &cfg) {
-  preferences.begin("tigotell", false);
-  preferences.putString("hostname", cfg.hostname);
-  preferences.putInt("txPin", cfg.txPin);
-  preferences.putInt("rxPin", cfg.rxPin);
-  preferences.putInt("enPin", cfg.enPin);
-  preferences.putString("influxHost", cfg.influxHost);
-  preferences.putUShort("influxPort", cfg.influxPort);
-  preferences.putInt("pushStats", cfg.pushStatsInterval);
-  preferences.putString("measName", cfg.measurementName);
-  preferences.putInt("nodeUpd", cfg.minSecondsNodeUpdates);
-  preferences.putInt("tableUpd", cfg.minSecondsNodeTableUpdates);
-  preferences.putString("otaUser", cfg.otaUser);
-  preferences.putString("otaPass", cfg.otaPass);
-  preferences.putString("mqttHost", cfg.mqttHost);
-  preferences.putUShort("mqttPort", cfg.mqttPort);
-  preferences.putString("mqttUser", cfg.mqttUser);
-  preferences.putString("mqttPass", cfg.mqttPass);
-  preferences.putString("mqttTopic", cfg.mqttTopic);
-  preferences.putInt("mqttIntv", cfg.mqttInterval);
-  preferences.putBool("mqttHaDisc", cfg.mqttDiscovery);
-  preferences.end();
+  Preferences prefs;
+  prefs.begin("tigotell", false);
+  prefs.putString("hostname", cfg.hostname);
+  prefs.putInt("txPin", cfg.txPin);
+  prefs.putInt("rxPin", cfg.rxPin);
+  prefs.putInt("enPin", cfg.enPin);
+  prefs.putString("influxHost", cfg.influxHost);
+  prefs.putUShort("influxPort", cfg.influxPort);
+  prefs.putInt("pushStats", cfg.pushStatsInterval);
+  prefs.putString("measName", cfg.measurementName);
+  prefs.putInt("nodeUpd", cfg.minSecondsNodeUpdates);
+  prefs.putInt("tableUpd", cfg.minSecondsNodeTableUpdates);
+  prefs.putString("otaUser", cfg.otaUser);
+  prefs.putString("otaPass", cfg.otaPass);
+  prefs.putString("mqttHost", cfg.mqttHost);
+  prefs.putUShort("mqttPort", cfg.mqttPort);
+  prefs.putString("mqttUser", cfg.mqttUser);
+  prefs.putString("mqttPass", cfg.mqttPass);
+  prefs.putString("mqttTopic", cfg.mqttTopic);
+  prefs.putInt("mqttIntv", cfg.mqttInterval);
+  prefs.putBool("mqttHaDisc", cfg.mqttDiscovery);
+  prefs.end();
 }
 
 void sendUdpPayload(const std::string &payload) {
