@@ -818,6 +818,137 @@ TEST(TigoParserTest, ValidTlvFollowedByTruncatedSecondTlvInSameFrame) {
   EXPECT_EQ(parser.getStatistics().powerDataCount, 2u);
 }
 
+TEST(TigoParserTest, NodeTableStrips0x8000MarkerBitFromNodeId) {
+  TigoParser parser;
+
+  NodeTableInput entry = {
+      {0x04, 0xC0, 0x5B, 0x40, 0x00, 0x9A, 0x57, 0xA2},
+      0x802A,
+  };
+  auto wire = buildWireFrame(buildNodeTablePayload(0x10, {entry}));
+  parser.pushBytes(wire.data(), wire.size());
+
+  ASSERT_TRUE(parser.hasFrames());
+  auto frame = parser.popFrame();
+  auto *table = dynamic_cast<TigoNodeTableFrame *>(frame.get());
+  ASSERT_NE(table, nullptr);
+  ASSERT_EQ(table->nodes.size(), 1u);
+  EXPECT_EQ(table->nodes[0].barcode, "04C05B40009A57A2");
+  EXPECT_EQ(table->nodes[0].pv_node_id, 0x002A);
+}
+
+TEST(TigoParserTest, TigoBarcodeFormatsNormalAndAllZeroLowerNibbles) {
+  const uint8_t addr1[8] = {0x04, 0xC0, 0x5B, 0x40, 0x00, 0x9A, 0x57, 0xA2};
+  EXPECT_EQ(tigoBarcode(addr1), "4-9A57A2L");
+  EXPECT_EQ(tigoBarcodeFromHex("04C05B40009A57A2"), "4-9A57A2L");
+  EXPECT_EQ(tigoBarcodeFromHex("04c05b40009a57a2"), "4-9A57A2L");
+  EXPECT_EQ(tigoBarcodeFromHex("04C05B3000123456"), "3-123456W");
+
+  // All 9 lower nibbles zero: keep the final zero nibble ("0-0L", not "0-L").
+  const uint8_t allZeroLower[8] = {0x04, 0xC0, 0x5B, 0x00,
+                                   0x00, 0x00, 0x00, 0x00};
+  EXPECT_EQ(tigoBarcode(allZeroLower), "0-0L");
+  EXPECT_EQ(tigoBarcodeFromHex("04C05B0000000000"), "0-0L");
+
+  // Malformed hex inputs return empty string.
+  EXPECT_EQ(tigoBarcodeFromHex(""), "");
+  EXPECT_EQ(tigoBarcodeFromHex("04C05B"), "");
+  EXPECT_EQ(tigoBarcodeFromHex("04C05B40009A57A200"), "");
+  EXPECT_EQ(tigoBarcodeFromHex("04C05B40009A57GZ"), "");
+}
+
+TEST(TigoParserTest, GatewayVersion000BFiltersNonPrintableAndCapsLength) {
+  TigoParser parser;
+
+  // Frame from gateway 1 (0x8001), type 0x000B
+  std::vector<uint8_t> payload = {
+      0x80, 0x01, 0x00, 0x0B,
+      0x00, 0x07, 'T', 'A', 'P', '\r', '\n', 'v', '1', '.', '2',
+      0x1B, 0x7F, 0x80, 0xFF, ' ', '\r', '\n', ' ',
+  };
+  auto wire = buildWireFrame(payload);
+  parser.pushBytes(wire.data(), wire.size());
+
+  const auto &gateways = parser.getGateways();
+  auto it = gateways.find(1);
+  ASSERT_NE(it, gateways.end());
+  EXPECT_TRUE(it->second.seen);
+  EXPECT_EQ(it->second.version, "TAP  v1.2");
+
+  // Version longer than 120 printable chars is capped at 120 chars.
+  std::vector<uint8_t> longPayload = {0x80, 0x01, 0x00, 0x0B};
+  longPayload.insert(longPayload.end(), 140, 'A');
+  auto longWire = buildWireFrame(longPayload);
+  parser.pushBytes(longWire.data(), longWire.size());
+
+  it = parser.getGateways().find(1);
+  ASSERT_NE(it, parser.getGateways().end());
+  EXPECT_EQ(it->second.version.size(), 120u);
+  EXPECT_EQ(it->second.version, std::string(120, 'A'));
+}
+
+TEST(TigoParserTest, CommandResponse0B10UpdatesTxBuffersMin) {
+  TigoParser parser;
+
+  auto send0B10 = [&](uint8_t txFree) {
+    std::vector<uint8_t> payload = {0x80, 0x01, 0x0B, 0x10,
+                                    0x00, txFree, 0x00, 0x99};
+    auto wire = buildWireFrame(payload);
+    parser.pushBytes(wire.data(), wire.size());
+  };
+
+  send0B10(10);
+  auto it = parser.getGateways().find(1);
+  ASSERT_NE(it, parser.getGateways().end());
+  EXPECT_EQ(it->second.txBuffersFree, 10);
+  EXPECT_EQ(it->second.txBuffersMin, 10);
+
+  send0B10(4);
+  EXPECT_EQ(it->second.txBuffersFree, 4);
+  EXPECT_EQ(it->second.txBuffersMin, 4);
+
+  send0B10(12);
+  EXPECT_EQ(it->second.txBuffersFree, 12);
+  EXPECT_EQ(it->second.txBuffersMin, 4);
+}
+
+TEST(TigoParserTest, GatewayAndNodeTimestampsPreserve64BitValuesPast49Days) {
+  TigoParser parser;
+
+  constexpr uint64_t kPast32BitMs = 0x100000000ULL + 12345ULL;
+  constexpr uint64_t kLater64BitMs = 0x200000100ULL;
+
+  auto sendGatewayTlv = [&](uint16_t nodeId) {
+    auto pkt = buildPowerPacket(nodeId, 123, 700, 345, 200, 1600, 255, 185);
+    auto payload = buildTLVFramePayload(0x001F, pkt);
+    payload[0] = 0x80; // fromGateway bit
+    payload[1] = 0x01; // gateway ID 1
+    auto wire = buildWireFrame(payload);
+    parser.pushBytes(wire.data(), wire.size());
+    while (parser.hasFrames()) {
+      parser.popFrame();
+    }
+  };
+
+  parser.setTime(kPast32BitMs);
+  sendGatewayTlv(0x0042);
+
+  const auto &gateways = parser.getGateways();
+  auto gwIt = gateways.find(1);
+  ASSERT_NE(gwIt, gateways.end());
+  EXPECT_TRUE(gwIt->second.seen);
+  EXPECT_EQ(gwIt->second.lastSeenMs, kPast32BitMs);
+  auto nodeIt = gwIt->second.nodes.find(0x0042);
+  ASSERT_NE(nodeIt, gwIt->second.nodes.end());
+  EXPECT_EQ(nodeIt->second.lastMs, kPast32BitMs);
+
+  parser.setTime(kLater64BitMs);
+  sendGatewayTlv(0x0042);
+
+  EXPECT_EQ(gwIt->second.lastSeenMs, kLater64BitMs);
+  EXPECT_EQ(gwIt->second.nodes.at(0x0042).lastMs, kLater64BitMs);
+}
+
 int main(int argc, char **argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();
