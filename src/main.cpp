@@ -8,6 +8,7 @@
 #include <NetWizard.h>
 #include <WebSerial.h>
 
+#include <cstdlib>
 #include <limits>
 #include <map>
 #include <memory>
@@ -182,6 +183,78 @@ NetWizard netWizard(&server);
 
 unsigned long lastStatsTime = 0;
 
+// A TAP that sent nothing for this long counts as offline.
+constexpr uint64_t kTapOfflineMs = 60000;
+// Modules heard through a TAP within this window count as connected to it.
+constexpr uint64_t kTapModuleWindowMs = 300000;
+
+String tapHexId(uint16_t id) {
+  char buf[8];
+  snprintf(buf, sizeof(buf), "%04X", id);
+  return buf;
+}
+
+// "ok", "degraded" (answers fewer than 90 % of recent polls) or "offline".
+const char *tapState(const TigoGatewayStatus &gw, uint64_t now) {
+  uint64_t age = now >= gw.lastSeenMs ? now - gw.lastSeenMs : 0;
+  if (!gw.seen || age > kTapOfflineMs)
+    return "offline";
+  int pct = gw.recentAnsweredPercent();
+  return pct >= 0 && pct < 90 ? "degraded" : "ok";
+}
+
+void tapToJson(JsonObject o, const TigoGatewayStatus &gw, uint64_t now) {
+  o["id"] = tapHexId(gw.id);
+  o["state"] = tapState(gw, now);
+  if (gw.seen)
+    o["last_seen_s"] = (now >= gw.lastSeenMs ? now - gw.lastSeenMs : 0) / 1000;
+  o["polls"] = gw.polls;
+  o["answered"] = gw.answered;
+  o["missed"] = gw.missed;
+  int pct = gw.recentAnsweredPercent();
+  if (pct >= 0)
+    o["recent_answered_pct"] = pct;
+  if (gw.rxBuffersUsed >= 0) {
+    o["rx_buffers_used"] = gw.rxBuffersUsed;
+    o["rx_buffers_max"] = gw.rxBuffersMax;
+  }
+  if (gw.txBuffersFree >= 0) {
+    o["tx_buffers_free"] = gw.txBuffersFree;
+    if (gw.txBuffersMin >= 0)
+      o["tx_buffers_min"] = gw.txBuffersMin;
+  }
+  if (gw.slotCounter >= 0)
+    o["slot_counter"] = gw.slotCounter;
+  o["packets"] = gw.packets;
+  o["power_reports"] = gw.powerReports;
+  int modules = 0;
+  long rssiSum = 0;
+  int rssiMin = 999;
+  for (auto const &[node, seen] : gw.nodes) {
+    uint64_t age = now >= seen.lastMs ? now - seen.lastMs : 0;
+    if (age > kTapModuleWindowMs)
+      continue;
+    modules++;
+    rssiSum += seen.rssi;
+    rssiMin = std::min(rssiMin, seen.rssi);
+  }
+  o["modules"] = modules;
+  if (modules > 0) {
+    o["rssi_avg"] = static_cast<int>(rssiSum / modules);
+    o["rssi_min"] = rssiMin;
+  }
+  auto bc = parser.getGatewayBarcodes().find(gw.id);
+  if (bc != parser.getGatewayBarcodes().end())
+    o["barcode"] = bc->second.c_str();
+  if (!gw.version.empty())
+    o["version"] = gw.version.c_str();
+  if (gw.radioChannel >= 0)
+    o["radio_channel"] = gw.radioChannel;
+  if (gw.panId >= 0)
+    o["pan_id"] = tapHexId(gw.panId);
+}
+
+
 // Store the latest power frame and timestamp for each node
 struct PowerNodeData {
   std::shared_ptr<TigoPowerFrame> frame;
@@ -193,13 +266,69 @@ std::map<uint16_t, PowerNodeData> nodePowerData;
 struct NodeInfo {
   uint16_t address = 0;
   uint16_t pv_node_id = 0;
-  std::string barcode = "";
+  std::string barcode = "";      // Tigo format, e.g. "4-EF82C4J"
+  std::string long_address = ""; // 16 hex digits from the node table
   uint32_t barcode_fragment = 0;
   uint64_t last_seen = 0;
 };
 
 // Persistent registry of all discovered nodes
 std::map<uint16_t, NodeInfo> persistentNodeTable;
+
+// The CCA sends its node table (module ID -> long address) rarely, mostly
+// while modules are being added. Keep the mapping in NVS so it survives
+// restarts. Format: version byte, then per node 2 bytes ID + 8 bytes address.
+constexpr size_t kNodeMapMaxNodes = 200;
+
+void saveNodeMap(const std::vector<uint8_t> &blob) {
+  Preferences prefs; // own handle: loop() and web handlers may overlap
+  if (!prefs.begin("nodemap", false))
+    return;
+  bool ok = prefs.putBytes("v1", blob.data(), blob.size()) == blob.size();
+  prefs.end();
+  taskLog.printf("Node map %s: %u modules", ok ? "saved" : "NOT saved",
+                 (unsigned)((blob.size() - 1) / 10));
+}
+
+void loadNodeMap() {
+  Preferences prefs;
+  if (!prefs.begin("nodemap", true))
+    return;
+  size_t len = prefs.getBytesLength("v1");
+  std::vector<uint8_t> blob(len);
+  if (len > 0)
+    prefs.getBytes("v1", blob.data(), len);
+  prefs.end();
+  if (len < 1 || blob[0] != 1)
+    return;
+  for (size_t pos = 1; pos + 10 <= len; pos += 10) {
+    uint16_t id = (blob[pos] << 8) | blob[pos + 1];
+    char hex[17];
+    for (int i = 0; i < 8; i++)
+      snprintf(hex + i * 2, 3, "%02X", blob[pos + 2 + i]);
+    NodeInfo &info = persistentNodeTable[id];
+    info.pv_node_id = id;
+    info.long_address = hex;
+    info.barcode = tigoBarcode(&blob[pos + 2]);
+  }
+}
+
+// Builds the blob from the registry; call with dataMutex held.
+std::vector<uint8_t> nodeMapBlob() {
+  std::vector<uint8_t> blob{1};
+  for (auto const &[id, info] : persistentNodeTable) {
+    if (info.long_address.size() != 16)
+      continue;
+    if ((blob.size() - 1) / 10 >= kNodeMapMaxNodes)
+      break;
+    blob.push_back(id >> 8);
+    blob.push_back(id & 0xFF);
+    uint64_t addr = std::strtoull(info.long_address.c_str(), nullptr, 16);
+    for (int shift = 56; shift >= 0; shift -= 8)
+      blob.push_back((addr >> shift) & 0xFF);
+  }
+  return blob;
+}
 
 // Store the last update time for each node
 std::map<uint16_t, unsigned long> lastUpdateTimes;
@@ -213,6 +342,7 @@ bool isElegantOtaStarted = false;
 
 void setup() {
   loadSettings();
+  loadNodeMap();
 
   Serial.begin(115200);
   pinMode(appConfig.enPin, OUTPUT);
@@ -289,7 +419,17 @@ void setup() {
         node["temperature"] = frame->temperature;
         node["duty_cycle"] = frame->duty_cycle;
         node["rssi"] = frame->rssi;
+        if (frame->gateway_id)
+          node["gateway"] = tapHexId(frame->gateway_id);
         node["last_updated"] = val.last_updated;
+      }
+
+      // TAPs (gateways) as seen on the bus
+      JsonArray taps = root["taps"].to<JsonArray>();
+      uint64_t nowMs = static_cast<uint64_t>(esp_timer_get_time() / 1000);
+      for (auto const &[id, gw] : parser.getGateways()) {
+        if (gw.seen || gw.polls > 0)
+          tapToJson(taps.add<JsonObject>(), gw, nowMs);
       }
 
       // Discovery Data (Persistent Map)
@@ -298,6 +438,8 @@ void setup() {
         JsonObject node = discoverNodes.add<JsonObject>();
         node["address"] = val.address;
         node["pv_node_id"] = val.pv_node_id;
+        if (!val.long_address.empty())
+          node["long_address"] = val.long_address.c_str();
         if (!val.barcode.empty()) {
           node["barcode"] = val.barcode.c_str();
         }
@@ -508,6 +650,7 @@ void loop() {
           bytesToRead); // Direct FIFO extraction, skips Stream::timedRead()
       if (count > 0) {
         std::lock_guard<std::mutex> lock(dataMutex);
+        parser.setTime(static_cast<uint64_t>(esp_timer_get_time() / 1000));
         parser.pushBytes(serialBuf, count);
       }
     }
@@ -630,14 +773,24 @@ void loop() {
         }
 
         // Update persistent node table with all records from this frame
+        bool changed = false;
+        std::vector<uint8_t> blob;
         {
           std::lock_guard<std::mutex> lock(dataMutex);
           for (const auto &entry : nodeTableFrame->nodes) {
             NodeInfo &info = persistentNodeTable[entry.pv_node_id];
             info.pv_node_id = entry.pv_node_id;
-            info.barcode = entry.barcode;
+            if (info.long_address != entry.barcode) {
+              info.long_address = entry.barcode;
+              info.barcode = tigoBarcodeFromHex(entry.barcode);
+              changed = true;
+            }
           }
+          if (changed)
+            blob = nodeMapBlob();
         }
+        if (changed)
+          saveNodeMap(blob);
       }
       break;
     }

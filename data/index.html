@@ -244,6 +244,17 @@
       content: 'Updated: ';
     }
 
+    .card-barcode {
+      font-family: monospace;
+      font-size: 0.8rem;
+      font-weight: 600;
+      color: var(--text);
+      margin-left: 0.6rem;
+      padding: 0.1rem 0.4rem;
+      border-radius: 0.25rem;
+      background: rgba(255, 255, 255, 0.07);
+    }
+
     .barcode-fragment {
       font-family: monospace;
     }
@@ -275,6 +286,38 @@
 
     tr:last-child td {
       border-bottom: none;
+    }
+
+    .tap-state {
+      font-weight: 600;
+      font-size: 0.75rem;
+      padding: .25rem .5rem;
+      border-radius: .25rem;
+    }
+
+    .tap-state.ok {
+      background: rgba(109, 173, 18, 0.12);
+      color: var(--success);
+    }
+
+    .tap-state.degraded {
+      background: var(--stale-bg);
+      color: var(--warning);
+    }
+
+    .tap-state.offline {
+      background: rgba(239, 68, 68, 0.1);
+      color: var(--danger);
+    }
+
+    .tap-card .wide {
+      grid-column: 1 / -1;
+    }
+
+    .tap-card .wide .metric-value {
+      font-size: 0.875rem;
+      font-weight: 500;
+      word-break: break-word;
     }
 
     @media (max-width: 768px) {
@@ -373,6 +416,10 @@
       </div>
     </section>
 
+    <section id="tap-section" style="display: none;">
+      <h2>Gateways (TAP)</h2>
+      <div class="power-grid" id="tap-grid"></div>
+    </section>
     <section>
       <h2>Discovery Registry</h2>
       <div style="overflow-x: auto;">
@@ -496,6 +543,7 @@
         // Update Power Grid
         const powerGrid = document.getElementById('power-grid');
         let totalWattage = 0;
+        const barcodeById = new Map((data.nodes || []).filter(n => n.barcode).map(n => [n.pv_node_id, n.barcode]));
         powerGrid.innerHTML = data.power.map(p => {
           const lastUpdated = p.last_updated ? p.last_updated : 0;
           const ageSeconds = (data.uptime_ms - lastUpdated) / 1000;
@@ -513,7 +561,7 @@
           return `
                     <div class="card power-card ${isStale ? 'stale' : ''}">
                         <div class="card-header">
-                            <span class="node-id">${p.pv_node_id}</span>
+                            <span class="node-id">${p.pv_node_id}${barcodeById.has(p.pv_node_id) ? `<span class="card-barcode">${barcodeById.get(p.pv_node_id)}</span>` : ''}</span>
                             <span class="address">${formatAddress(p.address)}</span>
                         </div>
                         <div class="card-body">
@@ -554,6 +602,41 @@
         const wattage = document.getElementById('stat-wattage');
         wattage.innerText = `${totalWattage.toLocaleString([], { maximumFractionDigits: 0 })} W`;
         wattage.style.color = totalWattage > 0 ? 'var(--primary)' : '';
+
+        // Update TAPs
+        const taps = data.taps || [];
+        document.getElementById('tap-section').style.display = taps.length ? '' : 'none';
+        const esc = (v) => String(v).replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]));
+        document.getElementById('tap-grid').innerHTML = taps.map(t => {
+          const stateLabel = t.state === 'ok' ? 'Online'
+            : t.state === 'degraded' ? 'Missing polls' : 'Offline';
+          const metric = (label, value, wide) => `
+                            <div class="metric${wide ? ' wide' : ''}">
+                                <span class="metric-label">${label}</span>
+                                <span class="metric-value">${value}</span>
+                            </div>`;
+          const lastSeen = t.last_seen_s === undefined ? 'never'
+            : t.last_seen_s < 2 ? 'just now' : `${t.last_seen_s} s ago`;
+          return `
+                    <div class="card power-card tap-card">
+                        <div class="card-header">
+                            <span class="node-id">TAP ${esc(t.id)}</span>
+                            <span class="tap-state ${esc(t.state)}">${stateLabel}</span>
+                        </div>
+                        <div class="card-body">
+                            ${metric('Polls answered', t.recent_answered_pct === undefined ? '–' : `${t.recent_answered_pct} %`)}
+                            ${metric('Modules', t.modules)}
+                            ${metric('Avg. module signal', t.rssi_avg === undefined ? '–' : `${t.rssi_avg} (min ${t.rssi_min})`)}
+                            ${metric('Last response', lastSeen)}
+                            ${metric('Rx buffers used', t.rx_buffers_used === undefined ? '–' : `${t.rx_buffers_used} (max ${t.rx_buffers_max})`)}
+                            ${metric('Tx buffers free', t.tx_buffers_free === undefined ? '–' : `${t.tx_buffers_free}${t.tx_buffers_min !== undefined ? ` (min ${t.tx_buffers_min})` : ''}`)}
+                            ${metric('Missed polls', `${t.missed.toLocaleString()} of ${t.polls.toLocaleString()}`)}
+                            ${metric('Radio', t.radio_channel === undefined ? '–' : `Ch ${t.radio_channel}, PAN ${esc(t.pan_id)}`)}
+                            ${t.barcode ? metric('Barcode', `<span class="barcode">${esc(t.barcode)}</span>`, true) : ''}
+                            ${t.version ? metric('Firmware', esc(t.version), true) : ''}
+                        </div>
+                    </div>`;
+        }).join('');
 
         // Update Discovery Table
         const discoveryTable = document.getElementById('discovery-table');

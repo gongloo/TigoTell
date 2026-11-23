@@ -1,6 +1,9 @@
 #include "TigoProtocol.h"
 
+#include <cctype>
+#include <cinttypes>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 // --- TigoPowerFrame Implementation ---
@@ -270,6 +273,141 @@ bool TigoParser::verifyCRC(const std::vector<uint8_t> &frame) {
   return receivedCRC == calculatedCRC;
 }
 
+// CRC-4 (polynomial 0x3, initial value 0x2) over the long address, written
+// with Tigo's alternate digits. See taptap docs/protocol.md, "Barcodes".
+std::string tigoBarcode(const uint8_t *a) {
+  uint8_t crc = 0x2;
+  for (int i = 0; i < 8; i++) {
+    uint8_t c = a[i] ^ (crc << 4);
+    for (int b = 0; b < 8; b++)
+      c = (c & 0x80) ? ((c << 1) ^ 0x30) : (c << 1);
+    crc = c >> 4;
+  }
+  uint64_t lower = (uint64_t(a[3] & 0x0F) << 32) | (uint64_t(a[4]) << 24) |
+                   (uint64_t(a[5]) << 16) | (uint64_t(a[6]) << 8) | a[7];
+  char buf[16];
+  snprintf(buf, sizeof(buf), "%X-%" PRIX64 "%c", a[3] >> 4, lower,
+           "GHJKLMNPRSTVWXYZ"[crc]);
+  return buf;
+}
+
+std::string tigoBarcodeFromHex(const std::string &hex) {
+  if (hex.size() != 16 ||
+      !std::all_of(hex.begin(), hex.end(),
+                   [](unsigned char c) { return std::isxdigit(c); }))
+    return "";
+  uint64_t val = std::strtoull(hex.c_str(), nullptr, 16);
+  uint8_t bytes[8];
+  for (int i = 0; i < 8; i++)
+    bytes[i] = static_cast<uint8_t>(val >> (56 - i * 8));
+  return tigoBarcode(bytes);
+}
+
+int TigoGatewayStatus::recentAnsweredPercent() const {
+  if (recentCount == 0)
+    return -1;
+  uint64_t mask = recentCount >= 64 ? ~0ULL : ((1ULL << recentCount) - 1);
+  return __builtin_popcountll(recentBits & mask) * 100 / recentCount;
+}
+
+namespace {
+void recordPoll(TigoGatewayStatus &gw, bool answered) {
+  gw.recentBits = (gw.recentBits << 1) | (answered ? 1 : 0);
+  if (gw.recentCount < 64)
+    gw.recentCount++;
+}
+} // namespace
+
+// Gateway frame layout: address (2), type (2), payload. The address carries
+// the gateway ID; bit 0x8000 is set on frames sent by the gateway.
+void TigoParser::trackGateway(const std::vector<uint8_t> &payload) {
+  uint16_t address = (payload[0] << 8) | payload[1];
+  uint16_t type = (payload[2] << 8) | payload[3];
+  bool fromGateway = address & 0x8000;
+  uint16_t id = address & 0x7FFF;
+
+  // Assign gateway ID request: the CCA tells a TAP (by long address) its ID.
+  if (type == 0x003C && !fromGateway && payload.size() >= 18) {
+    uint16_t newId = (payload[16] << 8) | payload[17];
+    gatewayBarcodes[newId] = tigoBarcode(&payload[8]);
+    return;
+  }
+
+  // Only traffic at a gateway's regular ID; enumeration uses temporary IDs.
+  switch (type) {
+  case 0x0148: case 0x0149: // receive request/response
+  case 0x0B0F: case 0x0B10: // command request/response
+  case 0x0B00: case 0x0B01: // ping request/response
+  case 0x003A: case 0x003B: // identify request/response
+  case 0x000A: case 0x000B: // version request/response
+    break;
+  default:
+    return;
+  }
+  if (id == 0)
+    return;
+
+  TigoGatewayStatus &gw = gateways[id];
+  gw.id = id;
+  if (fromGateway) {
+    gw.seen = true;
+    gw.lastSeenMs = nowMs;
+  }
+
+  switch (type) {
+  case 0x0148:
+    if (gw.awaiting) {
+      gw.missed++;
+      recordPoll(gw, false);
+    }
+    gw.polls++;
+    gw.awaiting = true;
+    break;
+  case 0x0149:
+    if (gw.awaiting) {
+      gw.answered++;
+      recordPoll(gw, true);
+      gw.awaiting = false;
+    }
+    break;
+  case 0x0B10:
+    gw.commands++;
+    if (payload.size() >= 6) {
+      gw.txBuffersFree = payload[5];
+      gw.txBuffersMin = gw.txBuffersMin < 0
+                            ? gw.txBuffersFree
+                            : std::min(gw.txBuffersMin, gw.txBuffersFree);
+    }
+    // Gateway radio configuration response (PV packet type 0E).
+    if (payload.size() >= 13 && payload[7] == 0x0E) {
+      gw.radioChannel = payload[10];
+      gw.panId = (payload[11] << 8) | payload[12];
+    }
+    break;
+  case 0x003B: // identify response: long address, gateway ID
+    if (payload.size() >= 12)
+      gatewayBarcodes[id] = tigoBarcode(&payload[4]);
+    break;
+  case 0x000B: { // version response: text with CR separators
+    std::string v;
+    v.reserve(std::min<size_t>(payload.size() - 4, 120));
+    for (size_t i = 4; i < payload.size(); i++) {
+      uint8_t b = payload[i];
+      if (b == '\r' || b == '\n')
+        v += ' ';
+      else if (b >= 0x20 && b <= 0x7E)
+        v += static_cast<char>(b);
+    }
+    while (!v.empty() && v.back() == ' ')
+      v.pop_back();
+    gw.version = v.substr(0, 120);
+    break;
+  }
+  default:
+    break;
+  }
+}
+
 void TigoParser::processFrame(const std::vector<uint8_t> &frame) {
   if (!verifyCRC(frame)) {
     if (ignoreFirstCrcError) {
@@ -289,14 +427,18 @@ void TigoParser::processFrame(const std::vector<uint8_t> &frame) {
   if (payload.size() < 4)
     return;
 
+  trackGateway(payload);
+
   if (payload[2] == 0x01 && payload[3] == 0x49) {
-    parseTLVPayload(payload);
+    auto gw = gateways.find(((payload[0] << 8) | payload[1]) & 0x7FFF);
+    parseTLVPayload(payload, gw != gateways.end() ? &gw->second : nullptr);
   } else if (payload[2] == 0x0B && (payload[3] == 0x10 || payload[3] == 0x0F)) {
     parseManagementPayload(payload);
   }
 }
 
-void TigoParser::parseTLVPayload(const std::vector<uint8_t> &payload) {
+void TigoParser::parseTLVPayload(const std::vector<uint8_t> &payload,
+                                 TigoGatewayStatus *gw) {
   // Header parsing logic based on reference `calculateHeaderLength`
   // Payload indices:
   // 0-1: Unknown
@@ -341,6 +483,24 @@ void TigoParser::parseTLVPayload(const std::vector<uint8_t> &payload) {
   // headerLen.
 
   size_t pos = 4 + headerLen;
+  if (pos > payload.size())
+    return;
+
+  // Optional status fields, in order, right after the status word.
+  if (gw) {
+    size_t f = 6;
+    if ((status & 0x01) == 0) {
+      gw->rxBuffersUsed = payload[f++];
+      gw->rxBuffersMax = std::max(gw->rxBuffersMax, gw->rxBuffersUsed);
+    }
+    if ((status & 0x02) == 0) {
+      gw->txBuffersFree = payload[f++];
+      gw->txBuffersMin = gw->txBuffersMin < 0
+                             ? gw->txBuffersFree
+                             : std::min(gw->txBuffersMin, gw->txBuffersFree);
+    }
+    gw->slotCounter = (payload[pos - 2] << 8) | payload[pos - 1];
+  }
 
   while (pos < payload.size()) {
     if (pos + 7 > payload.size())
@@ -357,6 +517,15 @@ void TigoParser::parseTLVPayload(const std::vector<uint8_t> &payload) {
 
     if (pos + packetTotalSize > payload.size())
       break;
+
+    if (gw) {
+      gw->packets++;
+      // Gateway radio configuration response (PV packet type 0E).
+      if (type == 0x0E && len >= 4) {
+        gw->radioChannel = payload[pos + 8];
+        gw->panId = (payload[pos + 9] << 8) | payload[pos + 10];
+      }
+    }
 
     if (type == 0x31) { // Power Frame
       stats.powerDataCount++;
@@ -404,8 +573,14 @@ void TigoParser::parseTLVPayload(const std::vector<uint8_t> &payload) {
       // 38/2 = 19.
       int rssi = payload[pos + 19];
 
-      frameQueue.push_back(std::unique_ptr<TigoFrame>(
-          new TigoPowerFrame(addr, node_id, vin, vout, duty, iin, temp, rssi)));
+      auto *frame =
+          new TigoPowerFrame(addr, node_id, vin, vout, duty, iin, temp, rssi);
+      if (gw) {
+        frame->gateway_id = gw->id;
+        gw->powerReports++;
+        gw->nodes[node_id] = {nowMs, rssi};
+      }
+      frameQueue.push_back(std::unique_ptr<TigoFrame>(frame));
     } else if (type == 0x09) { // Announce Frame
       stats.announceCount++;
       // Structure (Standard Header like PowerFrame):
@@ -469,7 +644,10 @@ void TigoParser::parseManagementPayload(const std::vector<uint8_t> &payload) {
         ss << std::setw(2) << (int)payload[pos + j];
       entry.barcode = ss.str();
 
-      entry.pv_node_id = (payload[pos + 8] << 8) | payload[pos + 9];
+      // Node tables mark entries with bit 0x8000 (meaning undocumented);
+      // power reports and announcements use the same ID without it.
+      entry.pv_node_id =
+          ((payload[pos + 8] << 8) | payload[pos + 9]) & 0x7FFF;
       entries.push_back(entry);
 
       pos += 10;
