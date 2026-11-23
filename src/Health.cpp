@@ -174,7 +174,7 @@ void restart(const char *cause) {
   Serial.printf("Restarting: %s\n", cause);
   taskLog.printf("Restarting: %s", cause);
   taskLog.flush();
-  delay(1);
+  delay(2);
   WebSerial.loop(); // >100 us: _print_buffer -> _buffer
   delay(110);
   WebSerial.loop(); // >100 ms: _buffer -> _ws->binaryAll()
