@@ -8,6 +8,7 @@
 #include <NetWizard.h>
 #include <WebSerial.h>
 
+#include <algorithm>
 #include <cstdlib>
 #include <limits>
 #include <map>
@@ -908,6 +909,10 @@ void setup() {
           }
           return;
         }
+        if (!doc.is<JsonObject>()) {
+          request->send(400, "text/plain", "Expected JSON object");
+          return;
+        }
 
         Config cfg;
         {
@@ -922,8 +927,11 @@ void setup() {
             appConfig.enPin = doc["enPin"];
           if (doc["influxHost"].is<const char *>())
             appConfig.influxHost = doc["influxHost"].as<String>();
-          if (doc["influxPort"].is<int>())
-            appConfig.influxPort = doc["influxPort"];
+          if (doc["influxPort"].is<int>()) {
+            int port = doc["influxPort"];
+            if (port >= 0 && port <= 65535)
+              appConfig.influxPort = static_cast<uint16_t>(port);
+          }
           if (doc["pushStatsInterval"].is<int>())
             appConfig.pushStatsInterval = doc["pushStatsInterval"];
           if (doc["measurementName"].is<const char *>())
@@ -945,8 +953,11 @@ void setup() {
           }
           if (doc["mqttHost"].is<const char *>())
             appConfig.mqttHost = doc["mqttHost"].as<String>();
-          if (doc["mqttPort"].is<int>())
-            appConfig.mqttPort = doc["mqttPort"];
+          if (doc["mqttPort"].is<int>()) {
+            int port = doc["mqttPort"];
+            if (port >= 0 && port <= 65535)
+              appConfig.mqttPort = static_cast<uint16_t>(port);
+          }
           if (doc["mqttUser"].is<const char *>())
             appConfig.mqttUser = doc["mqttUser"].as<String>();
           if (doc["mqttPass"].is<const char *>()) {
@@ -963,7 +974,8 @@ void setup() {
               appConfig.mqttTopic = val;
           }
           if (doc["mqttInterval"].is<int>())
-            appConfig.mqttInterval = max(1, doc["mqttInterval"].as<int>());
+            appConfig.mqttInterval =
+                std::clamp(doc["mqttInterval"].as<int>(), 1, 3600);
           if (doc["mqttDiscovery"].is<bool>())
             appConfig.mqttDiscovery = doc["mqttDiscovery"];
           cfg = appConfig;
