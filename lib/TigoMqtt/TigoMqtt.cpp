@@ -237,6 +237,8 @@ void TigoMqttPublisher::publish(const MqttPublishSnapshot &snap,
       }
     }
     for (const auto &tap : snap.taps) {
+      if (!tap.gw.seen && tap.gw.polls == 0)
+        continue;
       bool hasBarcode = !tap.barcode.empty();
       auto known = discoveredTaps.find(tap.id);
       if (known == discoveredTaps.end() || (!known->second && hasBarcode)) {
@@ -287,6 +289,8 @@ void TigoMqttPublisher::publish(const MqttPublishSnapshot &snap,
   sink.enqueue("stats", payload);
 
   for (const auto &tap : snap.taps) {
+    if (!tap.gw.seen && tap.gw.polls == 0)
+      continue;
     JsonDocument tapDoc;
     tapToJson(tapDoc.to<JsonObject>(), tap.gw, snap.nowMs, &tap.barcode);
     std::string tapPayload;

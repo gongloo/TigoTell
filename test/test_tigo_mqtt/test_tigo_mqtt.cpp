@@ -165,10 +165,11 @@ TEST(TigoMqttTest, TapHelpersAndJsonSerialization) {
   // Underflow guard (now < lastSeenMs).
   EXPECT_STREQ(tapState(gw, 50000), "ok");
 
-  // Degraded (< 90%) vs ok (>= 90%).
-  gw.recentCount = 10;
-  gw.recentBits = 0b0011111111ULL; // 8/10 = 80%
+  // Degraded (< 90%) vs ok (>= 90%): 8/9 = 88% -> degraded, 9/10 = 90% -> ok.
+  gw.recentCount = 9;
+  gw.recentBits = 0b011111111ULL; // 8/9 = 88%
   EXPECT_STREQ(tapState(gw, 100500), "degraded");
+  gw.recentCount = 10;
   gw.recentBits = 0b0111111111ULL; // 9/10 = 90%
   EXPECT_STREQ(tapState(gw, 100500), "ok");
 
@@ -228,6 +229,7 @@ TEST(TigoMqttTest, TapHelpersAndJsonSerialization) {
   EXPECT_TRUE(minDoc["recent_answered_pct"].isNull());
   EXPECT_TRUE(minDoc["rx_buffers_used"].isNull());
   EXPECT_TRUE(minDoc["tx_buffers_free"].isNull());
+  EXPECT_TRUE(minDoc["tx_buffers_min"].isNull());
   EXPECT_TRUE(minDoc["slot_counter"].isNull());
   EXPECT_EQ(minDoc["modules"].as<int>(), 0);
   EXPECT_TRUE(minDoc["rssi_avg"].isNull());
@@ -236,6 +238,19 @@ TEST(TigoMqttTest, TapHelpersAndJsonSerialization) {
   EXPECT_TRUE(minDoc["version"].isNull());
   EXPECT_TRUE(minDoc["radio_channel"].isNull());
   EXPECT_TRUE(minDoc["pan_id"].isNull());
+
+  // Gateway with only expired modules (> kTapModuleWindowMs) and negative
+  // txBuffersMin omits rssi_avg/rssi_min and tx_buffers_min.
+  TigoGatewayStatus expiredModulesGw = makeActiveGateway(0x0008, 500000);
+  expiredModulesGw.txBuffersMin = -1;
+  expiredModulesGw.nodes[0x0020] = {500000 - kTapModuleWindowMs - 1, 120};
+  JsonDocument expiredDoc;
+  tapToJson(expiredDoc.to<JsonObject>(), expiredModulesGw, 500000, nullptr);
+  EXPECT_EQ(expiredDoc["modules"].as<int>(), 0);
+  EXPECT_TRUE(expiredDoc["rssi_avg"].isNull());
+  EXPECT_TRUE(expiredDoc["rssi_min"].isNull());
+  EXPECT_EQ(expiredDoc["tx_buffers_free"].as<int>(), 12);
+  EXPECT_TRUE(expiredDoc["tx_buffers_min"].isNull());
 }
 
 TEST(TigoMqttTest, SystemNodeAndTapDiscoverySchemas) {
@@ -436,6 +451,11 @@ TEST(TigoMqttTest, TelemetryPayloadsPublishModulesStatsAndTaps) {
   n2.current_in = 4.0f; // power = 120.0
   snap.nodes = {n1, n2};
 
+  TigoGatewayStatus unseenUnpolled;
+  unseenUnpolled.id = 0x0008;
+  unseenUnpolled.seen = false;
+  unseenUnpolled.polls = 0;
+
   TigoGatewayStatus polledOffline;
   polledOffline.id = 0x0009;
   polledOffline.seen = false;
@@ -443,6 +463,7 @@ TEST(TigoMqttTest, TelemetryPayloadsPublishModulesStatsAndTaps) {
   polledOffline.missed = 14;
 
   snap.taps.push_back({0x0001, makeActiveGateway(0x0001, 120000), "4-TAP1"});
+  snap.taps.push_back({0x0008, unseenUnpolled, "4-SKIP"});
   snap.taps.push_back({0x0009, polledOffline, ""});
 
   pub.publish(snap, sink);
@@ -508,6 +529,33 @@ TEST(TigoMqttTest, TelemetryPayloadsPublishModulesStatsAndTaps) {
             DeserializationError::Ok);
   EXPECT_EQ(tap9Doc["state"].as<std::string>(), "offline");
   EXPECT_EQ(tap9Doc["polls"].as<uint32_t>(), 14u);
+
+  // Unseen & unpolled TAP (0008) must be skipped for telemetry and discovery.
+  EXPECT_EQ(sink.findByTopic("solar/tigo/tap/0008"), nullptr);
+
+  sink.messages.clear();
+  snap.cfg.discovery = true;
+  pub.publish(snap, sink);
+  EXPECT_EQ(sink.findByTopic("homeassistant/device/tigotell_aabbcc_tap_0008/config"),
+            nullptr);
+  EXPECT_NE(sink.findByTopic("homeassistant/device/tigotell_aabbcc_tap_0001/config"),
+            nullptr);
+  EXPECT_NE(sink.findByTopic("homeassistant/device/tigotell_aabbcc_tap_0009/config"),
+            nullptr);
+
+  // Empty nodes & taps snapshot publishes zero active_nodes and total_power.
+  sink.messages.clear();
+  MqttPublishSnapshot emptySnap;
+  emptySnap.cfg = makeConfig("solar/tigo", false);
+  emptySnap.nowMs = 200000;
+  pub.publish(emptySnap, sink);
+  ASSERT_EQ(sink.messages.size(), 1u);
+  EXPECT_EQ(sink.messages[0].topic, "solar/tigo/stats");
+  JsonDocument emptyStatsDoc;
+  ASSERT_EQ(deserializeJson(emptyStatsDoc, sink.messages[0].payload),
+            DeserializationError::Ok);
+  EXPECT_FLOAT_EQ(emptyStatsDoc["total_power"].as<float>(), 0.0f);
+  EXPECT_EQ(emptyStatsDoc["active_nodes"].as<size_t>(), 0u);
 }
 
 TEST(TigoMqttTest,

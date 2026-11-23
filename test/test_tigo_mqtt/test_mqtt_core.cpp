@@ -79,26 +79,12 @@ public:
   }
 
   bool publish(const char *topic, const char *payload, bool retained) override {
-    std::function<void()> hook;
-    bool ok = false;
-    {
-      std::lock_guard<std::mutex> lock(mu);
-      if (failPublishAfter >= 0 &&
-          publishedAttemptCount >= static_cast<size_t>(failPublishAfter)) {
-        ok = false;
-      } else {
-        ok = publishShouldSucceed;
-      }
-      publishedAttemptCount++;
-      if (ok) {
-        published.push_back(
-            {topic ? topic : "", payload ? payload : "", retained});
-      }
-      hook = onPublishHook;
-    }
-    if (hook)
-      hook();
-    return ok;
+    std::lock_guard<std::mutex> lock(mu);
+    if (!publishShouldSucceed)
+      return false;
+    published.push_back(
+        {topic ? topic : "", payload ? payload : "", retained});
+    return true;
   }
 
   bool subscribe(const char *topic) override {
@@ -129,8 +115,6 @@ public:
   bool connectShouldSucceed = true;
   int connectFailState = -2;
   bool publishShouldSucceed = true;
-  int failPublishAfter = -1;
-  size_t publishedAttemptCount = 0;
   bool isConnected = false;
   size_t disconnectCount = 0;
   size_t loopCount = 0;
@@ -138,7 +122,6 @@ public:
   std::vector<PublishedMessage> published;
   std::vector<std::string> subscribedTopics;
   std::function<void()> onConnectHook;
-  std::function<void()> onPublishHook;
 };
 
 MqttCore::Settings makeSettings(const std::string &host = "broker.local",
@@ -231,6 +214,7 @@ TEST(MqttCoreTest, EnqueueRequiresConnectionAndFormatsTopics) {
 
   core.step(client, 1000, true);
   ASSERT_TRUE(core.isConnected());
+  EXPECT_EQ(client.loopCount, 1u);
   client.published.clear();
 
   EXPECT_TRUE(core.enqueue("stats", "{\"total_power\":123}"));
@@ -238,6 +222,7 @@ TEST(MqttCoreTest, EnqueueRequiresConnectionAndFormatsTopics) {
                                    "{\"name\":\"TigoTell\"}", true));
 
   core.step(client, 1100, true);
+  EXPECT_EQ(client.loopCount, 2u);
   ASSERT_EQ(client.published.size(), 2u);
 
   EXPECT_EQ(client.published[0].topic, "solar/tigo/stats");
@@ -340,6 +325,19 @@ TEST(MqttCoreTest, ReconnectBackoffAndImmediateAfterConfigure) {
   core.step(client, 1000 + MqttCore::kReconnectIntervalMs + 2, true, logFn);
   EXPECT_EQ(client.connectCalls.size(), 3u);
   EXPECT_TRUE(core.isConnected());
+
+  // Initial failure at nowMs == 0: exact kReconnectIntervalMs (5000) does not
+  // retry, 5001 retries.
+  MqttCore zeroCore;
+  FakeMqttClient zeroClient;
+  zeroClient.connectShouldSucceed = false;
+  zeroCore.configure(makeSettings("broker.local", 1883, "tigotell"));
+  zeroCore.step(zeroClient, 0, true);
+  EXPECT_EQ(zeroClient.connectCalls.size(), 1u);
+  zeroCore.step(zeroClient, MqttCore::kReconnectIntervalMs, true);
+  EXPECT_EQ(zeroClient.connectCalls.size(), 1u);
+  zeroCore.step(zeroClient, MqttCore::kReconnectIntervalMs + 1, true);
+  EXPECT_EQ(zeroClient.connectCalls.size(), 2u);
 }
 
 TEST(MqttCoreTest, WifiLossAndBrokerDropClearQueueAndMarkDisconnected) {
@@ -497,19 +495,23 @@ TEST(MqttCoreTest, QueueCountAndByteLimitsEnforcedAndFreedOnDrain) {
   EXPECT_EQ(client.published.size(), kMessagesFor24K);
   EXPECT_TRUE(core.enqueueAbsolute("x", "", false));
 
-  // publishedCount() increments only when client.publish() returns true.
+  // publishedCount() increments only when client.publish() returns true, while
+  // failed publishes are still dequeued and free queue capacity.
   core.step(client, 1300, true);
   uint32_t beforeFailCount = core.publishedCount();
   client.publishShouldSucceed = false;
-  EXPECT_TRUE(core.enqueue("stats", "fail-1"));
-  EXPECT_TRUE(core.enqueue("stats", "fail-2"));
+  for (size_t i = 0; i < kMessagesFor24K; ++i) {
+    EXPECT_TRUE(core.enqueueAbsolute(topic, chunk, false));
+  }
+  EXPECT_FALSE(core.enqueueAbsolute("x", "", false));
   core.step(client, 1400, true);
   EXPECT_EQ(core.publishedCount(), beforeFailCount);
 
   client.publishShouldSucceed = true;
+  EXPECT_TRUE(core.enqueueAbsolute("x", "", false));
   EXPECT_TRUE(core.enqueue("stats", "ok-1"));
   core.step(client, 1500, true);
-  EXPECT_EQ(core.publishedCount(), beforeFailCount + 1);
+  EXPECT_EQ(core.publishedCount(), beforeFailCount + 2);
 }
 
 TEST(MqttCoreTest, OnMessageTriggersDiscoveryGenOnlyOnHomeAssistantOnline) {
@@ -522,6 +524,9 @@ TEST(MqttCoreTest, OnMessageTriggersDiscoveryGenOnlyOnHomeAssistantOnline) {
   };
 
   callOnMsg("homeassistant/status", "offline", 7);
+  EXPECT_EQ(core.discoveryGeneration(), gen);
+
+  callOnMsg("homeassistant/status", "offlin", 6);
   EXPECT_EQ(core.discoveryGeneration(), gen);
 
   callOnMsg("homeassistant/status", "online!", 7);
