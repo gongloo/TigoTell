@@ -83,7 +83,7 @@ public:
 // observed passively from the CCA's polling.
 struct TigoGatewayStatus {
   uint16_t id = 0;
-  uint32_t lastSeenMs = 0;  // last frame sent by the TAP
+  uint64_t lastSeenMs = 0;  // last frame sent by the TAP
   bool seen = false;        // TAP has sent at least one frame
   uint32_t polls = 0;       // receive requests from the CCA
   uint32_t answered = 0;    // ... answered by the TAP
@@ -101,7 +101,7 @@ struct TigoGatewayStatus {
   int panId = -1;
   std::string version;
   struct NodeSeen {
-    uint32_t lastMs;
+    uint64_t lastMs;
     int rssi;
   };
   std::map<uint16_t, NodeSeen> nodes; // modules heard through this TAP
@@ -145,7 +145,7 @@ public:
   const Statistics &getStatistics() const { return stats; }
 
   // Time base for gateway tracking; call before pushing bytes.
-  void setTime(uint32_t ms) { nowMs = ms; }
+  void setTime(uint64_t ms) { nowMs = ms; }
   const std::map<uint16_t, TigoGatewayStatus> &getGateways() const {
     return gateways;
   }
@@ -166,7 +166,7 @@ private:
   std::deque<std::unique_ptr<TigoFrame>> frameQueue;
   std::map<uint16_t, TigoGatewayStatus> gateways;
   std::map<uint16_t, std::string> gatewayBarcodes;
-  uint32_t nowMs = 0;
+  uint64_t nowMs = 0;
 
   void processFrame(const std::vector<uint8_t> &frame);
   void trackGateway(const std::vector<uint8_t> &payload);

@@ -183,9 +183,9 @@ NetWizard netWizard(&server);
 unsigned long lastStatsTime = 0;
 
 // A TAP that sent nothing for this long counts as offline.
-constexpr uint32_t kTapOfflineMs = 60000;
+constexpr uint64_t kTapOfflineMs = 60000;
 // Modules heard through a TAP within this window count as connected to it.
-constexpr uint32_t kTapModuleWindowMs = 300000;
+constexpr uint64_t kTapModuleWindowMs = 300000;
 
 String tapHexId(uint16_t id) {
   char buf[8];
@@ -194,18 +194,19 @@ String tapHexId(uint16_t id) {
 }
 
 // "ok", "degraded" (answers fewer than 90 % of recent polls) or "offline".
-const char *tapState(const TigoGatewayStatus &gw, uint32_t now) {
-  if (!gw.seen || now - gw.lastSeenMs > kTapOfflineMs)
+const char *tapState(const TigoGatewayStatus &gw, uint64_t now) {
+  uint64_t age = now >= gw.lastSeenMs ? now - gw.lastSeenMs : 0;
+  if (!gw.seen || age > kTapOfflineMs)
     return "offline";
   int pct = gw.recentAnsweredPercent();
   return pct >= 0 && pct < 90 ? "degraded" : "ok";
 }
 
-void tapToJson(JsonObject o, const TigoGatewayStatus &gw, uint32_t now) {
+void tapToJson(JsonObject o, const TigoGatewayStatus &gw, uint64_t now) {
   o["id"] = tapHexId(gw.id);
   o["state"] = tapState(gw, now);
   if (gw.seen)
-    o["last_seen_s"] = (now - gw.lastSeenMs) / 1000;
+    o["last_seen_s"] = (now >= gw.lastSeenMs ? now - gw.lastSeenMs : 0) / 1000;
   o["polls"] = gw.polls;
   o["answered"] = gw.answered;
   o["missed"] = gw.missed;
@@ -229,7 +230,8 @@ void tapToJson(JsonObject o, const TigoGatewayStatus &gw, uint32_t now) {
   long rssiSum = 0;
   int rssiMin = 999;
   for (auto const &[node, seen] : gw.nodes) {
-    if (now - seen.lastMs > kTapModuleWindowMs)
+    uint64_t age = now >= seen.lastMs ? now - seen.lastMs : 0;
+    if (age > kTapModuleWindowMs)
       continue;
     modules++;
     rssiSum += seen.rssi;
@@ -423,7 +425,7 @@ void setup() {
 
       // TAPs (gateways) as seen on the bus
       JsonArray taps = root["taps"].to<JsonArray>();
-      uint32_t nowMs = millis();
+      uint64_t nowMs = static_cast<uint64_t>(esp_timer_get_time() / 1000);
       for (auto const &[id, gw] : parser.getGateways()) {
         if (gw.seen || gw.polls > 0)
           tapToJson(taps.add<JsonObject>(), gw, nowMs);
@@ -647,7 +649,7 @@ void loop() {
           bytesToRead); // Direct FIFO extraction, skips Stream::timedRead()
       if (count > 0) {
         std::lock_guard<std::mutex> lock(dataMutex);
-        parser.setTime(millis());
+        parser.setTime(static_cast<uint64_t>(esp_timer_get_time() / 1000));
         parser.pushBytes(serialBuf, count);
       }
     }
