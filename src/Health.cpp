@@ -6,6 +6,7 @@
 #include <WiFi.h>
 #include <esp_core_dump.h>
 #include <esp_system.h>
+#include <esp_timer.h>
 
 namespace health {
 namespace {
@@ -45,11 +46,17 @@ uint32_t crashCount = 0;
 // Runtime state.
 volatile uint32_t wifiDisconnects = 0;
 volatile uint8_t lastDisconnectReason = 0;
-uint32_t wifiConnectedSinceMs = 0;
-uint32_t wifiOfflineSinceMs = 0;
-uint32_t lastReconnectMs = 0;
-uint32_t lowMemorySinceMs = 0;
+uint64_t wifiConnectedSinceMs = 0;
+uint64_t wifiOfflineSinceMs = 0;
+uint64_t lastReconnectMs = 0;
+uint64_t lowMemorySinceMs = 0;
 uint32_t maxBlockMin = UINT32_MAX;
+
+uint64_t nowMs() { return static_cast<uint64_t>(esp_timer_get_time() / 1000); }
+
+uint64_t elapsedMs(uint64_t now, uint64_t since) {
+  return now >= since ? now - since : 0;
+}
 
 const char *resetReasonText(esp_reset_reason_t r) {
   switch (r) {
@@ -153,14 +160,14 @@ void restart(const char *cause) {
 }
 
 void loop(bool paused) {
-  uint32_t now = millis();
+  uint64_t now = nowMs();
 
-  static uint32_t lastBeat = 0;
-  if (now - lastBeat >= 1000) {
+  static uint64_t lastBeat = 0;
+  if (elapsedMs(now, lastBeat) >= 1000) {
     lastBeat = now;
     uint32_t block = ESP.getMaxAllocHeap();
     maxBlockMin = std::min(maxBlockMin, block);
-    rtcRun.uptimeS = now / 1000;
+    rtcRun.uptimeS = static_cast<uint32_t>(now / 1000);
     rtcRun.heapMin = ESP.getMinFreeHeap();
     rtcRun.maxBlockMin = maxBlockMin;
     rtcRun.wifiDisconnects = wifiDisconnects;
@@ -170,8 +177,9 @@ void loop(bool paused) {
     // instead of limping on.
     if (block < kLowMemoryBlock) {
       if (lowMemorySinceMs == 0)
-        lowMemorySinceMs = now;
-      else if (!paused && now - lowMemorySinceMs > kLowMemoryRestartAfterMs)
+        lowMemorySinceMs = now == 0 ? 1 : now;
+      else if (!paused &&
+               elapsedMs(now, lowMemorySinceMs) > kLowMemoryRestartAfterMs)
         restart("Low memory");
     } else {
       lowMemorySinceMs = 0;
@@ -183,10 +191,11 @@ void loop(bool paused) {
   // while SoftAP mode is active.
   if (WiFi.status() == WL_CONNECTED) {
     if (wifiOfflineSinceMs != 0 || wifiConnectedSinceMs == 0) {
-      wifiConnectedSinceMs = now;
+      wifiConnectedSinceMs = now == 0 ? 1 : now;
       if (wifiOfflineSinceMs != 0)
-        taskLog.printf("WiFi back after %lus",
-                       (unsigned long)((now - wifiOfflineSinceMs) / 1000));
+        taskLog.printf(
+            "WiFi back after %lus",
+            (unsigned long)(elapsedMs(now, wifiOfflineSinceMs) / 1000));
     }
     wifiOfflineSinceMs = 0;
     return;
@@ -198,18 +207,19 @@ void loop(bool paused) {
   }
   if (wifiOfflineSinceMs == 0)
     wifiOfflineSinceMs = now == 0 ? 1 : now;
-  uint32_t offline = now - wifiOfflineSinceMs;
+  uint64_t offline = elapsedMs(now, wifiOfflineSinceMs);
   if (offline > kWifiRestartAfterMs)
     restart("WiFi lost for 10 minutes");
   if (offline > kWifiReconnectAfterMs &&
-      now - lastReconnectMs > kWifiReconnectEveryMs) {
+      elapsedMs(now, lastReconnectMs) > kWifiReconnectEveryMs) {
     lastReconnectMs = now;
     WiFi.reconnect();
   }
 }
 
 void toJson(JsonObject o) {
-  o["uptime_s"] = millis() / 1000;
+  uint64_t now = nowMs();
+  o["uptime_s"] = now / 1000;
   o["reset_reason"] = resetReasonText(resetReason);
   if (havePrevious) {
     JsonObject p = o["previous_run"].to<JsonObject>();
@@ -234,7 +244,9 @@ void toJson(JsonObject o) {
   w["connected"] = WiFi.status() == WL_CONNECTED;
   if (WiFi.status() == WL_CONNECTED) {
     w["rssi"] = WiFi.RSSI();
-    w["connected_s"] = (millis() - wifiConnectedSinceMs) / 1000;
+    uint64_t connSince = wifiConnectedSinceMs;
+    w["connected_s"] =
+        (connSince ? elapsedMs(now, connSince) : 0) / 1000;
   }
   w["disconnects"] = wifiDisconnects;
   if (lastDisconnectReason)
