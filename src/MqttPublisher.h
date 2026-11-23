@@ -5,9 +5,7 @@
 #include <PubSubClient.h>
 #include <WiFi.h>
 
-#include <atomic>
-#include <deque>
-#include <mutex>
+#include "MqttCore.h"
 
 // Publishes MQTT messages from a dedicated FreeRTOS task, so that broker
 // connects (which block for seconds if the broker is unreachable) never stall
@@ -35,48 +33,22 @@ public:
   bool enqueueAbsolute(const String &topic, const String &payload,
                        bool retain);
 
-  bool isEnabled() const { return enabled; }
-  bool isConnected() const { return connected; }
-  uint32_t publishedCount() const { return published; }
+  IMqttSink &sink() { return core; }
+
+  bool isEnabled() const { return core.isEnabled(); }
+  bool isConnected() const { return core.isConnected(); }
+  uint32_t publishedCount() const { return core.publishedCount(); }
   // Increments on every (re)connect and whenever Home Assistant comes online,
   // i.e. whenever discovery configs should be (re)published.
-  uint32_t discoveryGeneration() const { return discoveryGen; }
+  uint32_t discoveryGeneration() const { return core.discoveryGeneration(); }
 
 private:
-  struct Message {
-    String topic;
-    String payload;
-    bool retain;
-  };
-  static constexpr size_t kMaxQueue = 128;
-  // Also bound by bytes, so a slow broker cannot eat the heap the web
-  // server needs.
-  static constexpr size_t kMaxQueueBytes = 24 * 1024;
-  static constexpr const char *kHaStatusTopic = "homeassistant/status";
-  static constexpr unsigned long kReconnectIntervalMs = 5000;
-
   static void taskEntry(void *self);
   void run();
-  void connect();
-  void onMessage(char *topic, uint8_t *payload, unsigned int length);
-  bool push(String topic, const String &payload, bool retain);
 
   WiFiClient wifiClient;
   PubSubClient client{wifiClient};
-
-  std::mutex mutex;              // guards pending, hasPending, queue
-  Settings pending;              // written by configure()
-  bool hasPending = false;
-  Settings active;               // only touched by the MQTT task
-  String statusTopic;            // only touched by the MQTT task
-  std::deque<Message> queue;
-  size_t queuedBytes = 0;        // guarded by mutex
-
-  std::atomic<bool> enabled{false};
-  std::atomic<bool> connected{false};
-  std::atomic<uint32_t> published{0};
-  std::atomic<uint32_t> discoveryGen{0};
-  String baseTopic;              // guarded by mutex
+  MqttCore core;
 };
 
 #endif // MQTT_PUBLISHER_H

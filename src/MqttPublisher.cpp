@@ -1,12 +1,52 @@
 #include "MqttPublisher.h"
 
+#include <esp_timer.h>
+
 #include "TaskLog.h"
+
+namespace {
+
+class PubSubMqttClient : public IMqttClient {
+public:
+  explicit PubSubMqttClient(PubSubClient &c) : client(c) {}
+
+  void setServer(const char *host, uint16_t port) override {
+    client.setServer(host, port);
+  }
+
+  bool connect(const char *clientId, const char *user, const char *pass,
+               const char *willTopic, uint8_t willQos, bool willRetain,
+               const char *willMessage) override {
+    if (user && user[0] != '\0') {
+      return client.connect(clientId, user, pass, willTopic, willQos,
+                            willRetain, willMessage);
+    }
+    return client.connect(clientId, willTopic, willQos, willRetain,
+                          willMessage);
+  }
+
+  bool connected() override { return client.connected(); }
+  void disconnect() override { client.disconnect(); }
+
+  bool publish(const char *topic, const char *payload, bool retained) override {
+    return client.publish(topic, payload, retained);
+  }
+
+  bool subscribe(const char *topic) override { return client.subscribe(topic); }
+  bool loop() override { return client.loop(); }
+  int state() override { return client.state(); }
+
+private:
+  PubSubClient &client;
+};
+
+} // namespace
 
 void MqttPublisher::begin() {
   // Discovery configs for a module are ~2 KB.
   client.setBufferSize(4096);
   client.setCallback([this](char *topic, uint8_t *payload, unsigned int len) {
-    onMessage(topic, payload, len);
+    core.onMessage(topic, payload, len);
   });
   client.setKeepAlive(30);
   client.setSocketTimeout(5);
@@ -15,45 +55,23 @@ void MqttPublisher::begin() {
 }
 
 void MqttPublisher::configure(const Settings &settings) {
-  std::lock_guard<std::mutex> lock(mutex);
-  pending = settings;
-  hasPending = true;
-  connected = false;
-  enabled = settings.host.length() > 0 && settings.port != 0;
-}
-
-bool MqttPublisher::push(String topic, const String &payload, bool retain) {
-  size_t bytes = topic.length() + payload.length();
-  if (queue.size() >= kMaxQueue || queuedBytes + bytes > kMaxQueueBytes)
-    return false;
-  queue.push_back({std::move(topic), payload, retain});
-  queuedBytes += bytes;
-  return true;
+  MqttCore::Settings s;
+  s.host = settings.host.c_str();
+  s.port = settings.port;
+  s.user = settings.user.c_str();
+  s.pass = settings.pass.c_str();
+  s.clientId = settings.clientId.c_str();
+  s.baseTopic = settings.baseTopic.c_str();
+  core.configure(s);
 }
 
 bool MqttPublisher::enqueue(const String &subTopic, const String &payload) {
-  std::lock_guard<std::mutex> lock(mutex);
-  if (!connected)
-    return false;
-  return push(baseTopic + "/" + subTopic, payload, false);
+  return core.enqueue(subTopic.c_str(), payload.c_str());
 }
 
 bool MqttPublisher::enqueueAbsolute(const String &topic, const String &payload,
                                     bool retain) {
-  std::lock_guard<std::mutex> lock(mutex);
-  if (!connected)
-    return false;
-  return push(topic, payload, retain);
-}
-
-void MqttPublisher::onMessage(char *topic, uint8_t *payload,
-                              unsigned int length) {
-  // Home Assistant announces "online" after a restart; it then needs the
-  // discovery configs again.
-  if (strcmp(topic, kHaStatusTopic) == 0 && length == 6 &&
-      memcmp(payload, "online", 6) == 0) {
-    discoveryGen++;
-  }
+  return core.enqueueAbsolute(topic.c_str(), payload.c_str(), retain);
 }
 
 void MqttPublisher::taskEntry(void *self) {
@@ -61,110 +79,11 @@ void MqttPublisher::taskEntry(void *self) {
 }
 
 void MqttPublisher::run() {
-  unsigned long lastAttempt = 0;
-  bool firstAttempt = true;
-
+  PubSubMqttClient adapter(client);
   for (;;) {
-    // Take new settings under the lock, but do network I/O outside it: a
-    // stalled socket must never block enqueue() in loop().
-    bool apply = false;
-    Settings next;
-    {
-      std::lock_guard<std::mutex> lock(mutex);
-      if (hasPending) {
-        next = pending;
-        hasPending = false;
-        apply = true;
-      }
-    }
-    if (apply) {
-      if (client.connected()) {
-        client.publish(statusTopic.c_str(), "offline", true);
-        client.disconnect();
-      }
-      active = next;
-      connected = false;
-      firstAttempt = true;
-      {
-        std::lock_guard<std::mutex> lock(mutex);
-        baseTopic = active.baseTopic;
-        queue.clear();
-        queuedBytes = 0;
-      }
-    }
-
-    bool wantConnection = active.host.length() > 0 && active.port != 0 &&
-                          WiFi.status() == WL_CONNECTED;
-
-    if (!wantConnection) {
-      if (client.connected())
-        client.disconnect();
-    } else if (!client.connected() &&
-               (firstAttempt || millis() - lastAttempt > kReconnectIntervalMs)) {
-      firstAttempt = false;
-      lastAttempt = millis();
-      connect();
-    }
-
-    bool isUp = client.connected();
-    if (connected && !isUp)
-      taskLog.println("MQTT: connection lost.");
-    bool pendingNow = false;
-    {
-      std::lock_guard<std::mutex> lock(mutex);
-      pendingNow = hasPending;
-      connected = isUp && !pendingNow;
-    }
-
-    if (isUp && !pendingNow) {
-      client.loop();
-      for (;;) {
-        Message msg;
-        {
-          std::lock_guard<std::mutex> lock(mutex);
-          if (queue.empty())
-            break;
-          msg = std::move(queue.front());
-          queue.pop_front();
-          queuedBytes -= msg.topic.length() + msg.payload.length();
-        }
-        if (client.publish(msg.topic.c_str(), msg.payload.c_str(),
-                           msg.retain))
-          published++;
-      }
-    } else if (!isUp) {
-      std::lock_guard<std::mutex> lock(mutex);
-      queue.clear();
-      queuedBytes = 0;
-    }
-
+    core.step(adapter, static_cast<uint64_t>(esp_timer_get_time() / 1000),
+              WiFi.status() == WL_CONNECTED,
+              [](const char *msg) { taskLog.println(msg); });
     vTaskDelay(pdMS_TO_TICKS(20));
-  }
-}
-
-void MqttPublisher::connect() {
-  statusTopic = active.baseTopic + "/status";
-  // PubSubClient keeps the host pointer, so it must point at `active`.
-  client.setServer(active.host.c_str(), active.port);
-
-  bool ok;
-  if (active.user.length() > 0) {
-    ok = client.connect(active.clientId.c_str(), active.user.c_str(),
-                        active.pass.c_str(), statusTopic.c_str(), 0, true,
-                        "offline");
-  } else {
-    ok = client.connect(active.clientId.c_str(), statusTopic.c_str(), 0, true,
-                        "offline");
-  }
-
-  if (ok) {
-    client.publish(statusTopic.c_str(), "online", true);
-    client.subscribe(kHaStatusTopic);
-    discoveryGen++;
-    taskLog.printf("MQTT: connected to %s:%u\n", active.host.c_str(),
-                   active.port);
-  } else {
-    taskLog.printf("MQTT: connect to %s:%u failed (state %d)\n",
-                   active.host.c_str(), active.port, client.state());
   }
 }
