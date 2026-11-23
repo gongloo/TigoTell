@@ -8,6 +8,7 @@
 #include <NetWizard.h>
 #include <WebSerial.h>
 
+#include <cstdlib>
 #include <limits>
 #include <map>
 #include <memory>
@@ -308,7 +309,7 @@ void loadNodeMap() {
     NodeInfo &info = persistentNodeTable[id];
     info.pv_node_id = id;
     info.long_address = hex;
-    info.barcode = tigoBarcodeFromHex(hex);
+    info.barcode = tigoBarcode(&blob[pos + 2]);
   }
 }
 
@@ -322,9 +323,9 @@ std::vector<uint8_t> nodeMapBlob() {
       break;
     blob.push_back(id >> 8);
     blob.push_back(id & 0xFF);
-    for (int i = 0; i < 8; i++)
-      blob.push_back(strtol(info.long_address.substr(i * 2, 2).c_str(),
-                            nullptr, 16));
+    uint64_t addr = std::strtoull(info.long_address.c_str(), nullptr, 16);
+    for (int shift = 56; shift >= 0; shift -= 8)
+      blob.push_back((addr >> shift) & 0xFF);
   }
   return blob;
 }

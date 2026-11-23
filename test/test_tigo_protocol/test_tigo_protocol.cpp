@@ -855,6 +855,9 @@ TEST(TigoParserTest, TigoBarcodeFormatsNormalAndAllZeroLowerNibbles) {
   EXPECT_EQ(tigoBarcodeFromHex("04C05B"), "");
   EXPECT_EQ(tigoBarcodeFromHex("04C05B40009A57A200"), "");
   EXPECT_EQ(tigoBarcodeFromHex("04C05B40009A57GZ"), "");
+  EXPECT_EQ(tigoBarcodeFromHex(" 4C05B40009A57A2"), "");
+  EXPECT_EQ(tigoBarcodeFromHex("-4C05B40009A57A2"), "");
+  EXPECT_EQ(tigoBarcodeFromHex("+4C05B40009A57A2"), "");
 }
 
 TEST(TigoParserTest, GatewayVersion000BFiltersNonPrintableAndCapsLength) {

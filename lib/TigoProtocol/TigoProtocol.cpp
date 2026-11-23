@@ -1,6 +1,9 @@
 #include "TigoProtocol.h"
 
+#include <cctype>
+#include <cinttypes>
 #include <cstdio>
+#include <cstdlib>
 #include <cstring>
 
 // --- TigoPowerFrame Implementation ---
@@ -280,36 +283,23 @@ std::string tigoBarcode(const uint8_t *a) {
       c = (c & 0x80) ? ((c << 1) ^ 0x30) : (c << 1);
     crc = c >> 4;
   }
-  static const char *hex = "0123456789ABCDEF";
-  std::string out;
-  out += hex[a[3] >> 4];
-  out += '-';
-  bool skipping = true;
-  for (int i = 3; i < 8; i++) {
-    for (int half = (i == 3 ? 1 : 0); half < 2; half++) {
-      uint8_t nibble = half == 0 ? a[i] >> 4 : a[i] & 0x0F;
-      if (skipping && nibble == 0 && !(i == 7 && half == 1))
-        continue;
-      skipping = false;
-      out += hex[nibble];
-    }
-  }
-  out += "GHJKLMNPRSTVWXYZ"[crc];
-  return out;
+  uint64_t lower = (uint64_t(a[3] & 0x0F) << 32) | (uint64_t(a[4]) << 24) |
+                   (uint64_t(a[5]) << 16) | (uint64_t(a[6]) << 8) | a[7];
+  char buf[16];
+  snprintf(buf, sizeof(buf), "%X-%" PRIX64 "%c", a[3] >> 4, lower,
+           "GHJKLMNPRSTVWXYZ"[crc]);
+  return buf;
 }
 
 std::string tigoBarcodeFromHex(const std::string &hex) {
-  if (hex.size() != 16)
+  if (hex.size() != 16 ||
+      !std::all_of(hex.begin(), hex.end(),
+                   [](unsigned char c) { return std::isxdigit(c); }))
     return "";
+  uint64_t val = std::strtoull(hex.c_str(), nullptr, 16);
   uint8_t bytes[8];
-  for (int i = 0; i < 8; i++) {
-    char *end = nullptr;
-    std::string part = hex.substr(i * 2, 2);
-    long v = strtol(part.c_str(), &end, 16);
-    if (end != part.c_str() + 2)
-      return "";
-    bytes[i] = static_cast<uint8_t>(v);
-  }
+  for (int i = 0; i < 8; i++)
+    bytes[i] = static_cast<uint8_t>(val >> (56 - i * 8));
   return tigoBarcode(bytes);
 }
 
