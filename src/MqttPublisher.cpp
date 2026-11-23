@@ -18,7 +18,7 @@ void MqttPublisher::configure(const Settings &settings) {
   std::lock_guard<std::mutex> lock(mutex);
   pending = settings;
   hasPending = true;
-  baseTopic = settings.baseTopic;
+  connected = false;
   enabled = settings.host.length() > 0 && settings.port != 0;
 }
 
@@ -32,17 +32,17 @@ bool MqttPublisher::push(String topic, const String &payload, bool retain) {
 }
 
 bool MqttPublisher::enqueue(const String &subTopic, const String &payload) {
+  std::lock_guard<std::mutex> lock(mutex);
   if (!connected)
     return false;
-  std::lock_guard<std::mutex> lock(mutex);
   return push(baseTopic + "/" + subTopic, payload, false);
 }
 
 bool MqttPublisher::enqueueAbsolute(const String &topic, const String &payload,
                                     bool retain) {
+  std::lock_guard<std::mutex> lock(mutex);
   if (!connected)
     return false;
-  std::lock_guard<std::mutex> lock(mutex);
   return push(topic, payload, retain);
 }
 
@@ -85,6 +85,12 @@ void MqttPublisher::run() {
       active = next;
       connected = false;
       firstAttempt = true;
+      {
+        std::lock_guard<std::mutex> lock(mutex);
+        baseTopic = active.baseTopic;
+        queue.clear();
+        queuedBytes = 0;
+      }
     }
 
     bool wantConnection = active.host.length() > 0 && active.port != 0 &&

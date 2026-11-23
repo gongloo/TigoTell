@@ -56,6 +56,7 @@ struct Config {
 };
 
 Config appConfig;
+std::mutex dataMutex;
 Preferences preferences;
 String fsVersion = "unknown";
 
@@ -91,52 +92,58 @@ void loadSettings() {
   preferences.end();
 }
 
-void saveSettings() {
+void saveSettings(const Config &cfg) {
   preferences.begin("tigotell", false);
-  preferences.putString("hostname", appConfig.hostname);
-  preferences.putInt("txPin", appConfig.txPin);
-  preferences.putInt("rxPin", appConfig.rxPin);
-  preferences.putInt("enPin", appConfig.enPin);
-  preferences.putString("influxHost", appConfig.influxHost);
-  preferences.putUShort("influxPort", appConfig.influxPort);
-  preferences.putInt("pushStats", appConfig.pushStatsInterval);
-  preferences.putString("measName", appConfig.measurementName);
-  preferences.putInt("nodeUpd", appConfig.minSecondsNodeUpdates);
-  preferences.putInt("tableUpd", appConfig.minSecondsNodeTableUpdates);
-  preferences.putString("otaUser", appConfig.otaUser);
-  preferences.putString("otaPass", appConfig.otaPass);
-  preferences.putString("mqttHost", appConfig.mqttHost);
-  preferences.putUShort("mqttPort", appConfig.mqttPort);
-  preferences.putString("mqttUser", appConfig.mqttUser);
-  preferences.putString("mqttPass", appConfig.mqttPass);
-  preferences.putString("mqttTopic", appConfig.mqttTopic);
-  preferences.putInt("mqttIntv", appConfig.mqttInterval);
-  preferences.putBool("mqttHaDisc", appConfig.mqttDiscovery);
+  preferences.putString("hostname", cfg.hostname);
+  preferences.putInt("txPin", cfg.txPin);
+  preferences.putInt("rxPin", cfg.rxPin);
+  preferences.putInt("enPin", cfg.enPin);
+  preferences.putString("influxHost", cfg.influxHost);
+  preferences.putUShort("influxPort", cfg.influxPort);
+  preferences.putInt("pushStats", cfg.pushStatsInterval);
+  preferences.putString("measName", cfg.measurementName);
+  preferences.putInt("nodeUpd", cfg.minSecondsNodeUpdates);
+  preferences.putInt("tableUpd", cfg.minSecondsNodeTableUpdates);
+  preferences.putString("otaUser", cfg.otaUser);
+  preferences.putString("otaPass", cfg.otaPass);
+  preferences.putString("mqttHost", cfg.mqttHost);
+  preferences.putUShort("mqttPort", cfg.mqttPort);
+  preferences.putString("mqttUser", cfg.mqttUser);
+  preferences.putString("mqttPass", cfg.mqttPass);
+  preferences.putString("mqttTopic", cfg.mqttTopic);
+  preferences.putInt("mqttIntv", cfg.mqttInterval);
+  preferences.putBool("mqttHaDisc", cfg.mqttDiscovery);
   preferences.end();
 }
 
 void sendUdpPayload(const std::string &payload) {
-  if (payload.empty() || WiFi.status() != WL_CONNECTED ||
-      appConfig.influxHost.length() == 0 || appConfig.influxPort == 0) {
+  if (payload.empty() || WiFi.status() != WL_CONNECTED)
     return;
+  String host;
+  uint16_t port;
+  {
+    std::lock_guard<std::mutex> lock(dataMutex);
+    host = appConfig.influxHost;
+    port = appConfig.influxPort;
   }
+  if (host.length() == 0 || port == 0)
+    return;
   udp.writeTo(reinterpret_cast<const uint8_t *>(payload.c_str()),
-              payload.length(), appConfig.influxHost.c_str(),
-              appConfig.influxPort);
+              payload.length(), host.c_str(), port);
 }
 
-void applyMqttSettings() {
+void applyMqttSettings(const Config &cfg) {
   MqttPublisher::Settings s;
-  s.host = appConfig.mqttHost;
-  s.port = appConfig.mqttPort;
-  s.user = appConfig.mqttUser;
-  s.pass = appConfig.mqttPass;
-  s.baseTopic = appConfig.mqttTopic;
+  s.host = cfg.mqttHost;
+  s.port = cfg.mqttPort;
+  s.user = cfg.mqttUser;
+  s.pass = cfg.mqttPass;
+  s.baseTopic = cfg.mqttTopic;
   uint8_t mac[6];
   WiFi.macAddress(mac);
   char suffix[8];
   snprintf(suffix, sizeof(suffix), "-%02x%02x%02x", mac[3], mac[4], mac[5]);
-  s.clientId = appConfig.hostname + suffix;
+  s.clientId = cfg.hostname + suffix;
   mqtt.configure(s);
 }
 
@@ -390,8 +397,6 @@ std::vector<uint8_t> nodeMapBlob() {
 std::map<uint16_t, unsigned long> lastUpdateTimes;
 // Store the last update time for each announced address
 std::map<uint16_t, unsigned long> lastUpdateTimesAnnounce;
-
-std::mutex dataMutex;
 
 std::map<uint16_t, PowerStatsAccumulator> nodeAccumulators;
 bool isElegantOtaStarted = false;
@@ -675,7 +680,7 @@ void setup() {
     haDeviceId = id;
   }
   mqtt.begin();
-  applyMqttSettings();
+  applyMqttSettings(appConfig);
 
   // JSON Dump endpoint
   server.on("/json", HTTP_GET, [](AsyncWebServerRequest *request) {
@@ -766,23 +771,29 @@ void setup() {
 
   // Config GET endpoint
   server.on("/api/config", HTTP_GET, [](AsyncWebServerRequest *request) {
+    Config cfg;
+    {
+      std::lock_guard<std::mutex> lock(dataMutex);
+      cfg = appConfig;
+    }
+
     JsonDocument doc;
-    doc["hostname"] = appConfig.hostname;
-    doc["txPin"] = appConfig.txPin;
-    doc["rxPin"] = appConfig.rxPin;
-    doc["enPin"] = appConfig.enPin;
-    doc["influxHost"] = appConfig.influxHost;
-    doc["influxPort"] = appConfig.influxPort;
-    doc["pushStatsInterval"] = appConfig.pushStatsInterval;
-    doc["measurementName"] = appConfig.measurementName;
-    doc["minSecondsNodeUpdates"] = appConfig.minSecondsNodeUpdates;
-    doc["minSecondsNodeTableUpdates"] = appConfig.minSecondsNodeTableUpdates;
-    doc["mqttHost"] = appConfig.mqttHost;
-    doc["mqttPort"] = appConfig.mqttPort;
-    doc["mqttUser"] = appConfig.mqttUser;
-    doc["mqttTopic"] = appConfig.mqttTopic;
-    doc["mqttInterval"] = appConfig.mqttInterval;
-    doc["mqttDiscovery"] = appConfig.mqttDiscovery;
+    doc["hostname"] = cfg.hostname;
+    doc["txPin"] = cfg.txPin;
+    doc["rxPin"] = cfg.rxPin;
+    doc["enPin"] = cfg.enPin;
+    doc["influxHost"] = cfg.influxHost;
+    doc["influxPort"] = cfg.influxPort;
+    doc["pushStatsInterval"] = cfg.pushStatsInterval;
+    doc["measurementName"] = cfg.measurementName;
+    doc["minSecondsNodeUpdates"] = cfg.minSecondsNodeUpdates;
+    doc["minSecondsNodeTableUpdates"] = cfg.minSecondsNodeTableUpdates;
+    doc["mqttHost"] = cfg.mqttHost;
+    doc["mqttPort"] = cfg.mqttPort;
+    doc["mqttUser"] = cfg.mqttUser;
+    doc["mqttTopic"] = cfg.mqttTopic;
+    doc["mqttInterval"] = cfg.mqttInterval;
+    doc["mqttDiscovery"] = cfg.mqttDiscovery;
     doc["otaEnabled"] = isElegantOtaStarted;
 
     AsyncResponseStream *response =
@@ -799,63 +810,68 @@ void setup() {
         JsonDocument doc;
         DeserializationError error = deserializeJson(doc, data, len);
         if (!error) {
-          if (doc["hostname"].is<const char *>())
-            appConfig.hostname = doc["hostname"].as<String>();
-          if (doc["txPin"].is<int>())
-            appConfig.txPin = doc["txPin"];
-          if (doc["rxPin"].is<int>())
-            appConfig.rxPin = doc["rxPin"];
-          if (doc["enPin"].is<int>())
-            appConfig.enPin = doc["enPin"];
-          if (doc["influxHost"].is<const char *>())
-            appConfig.influxHost = doc["influxHost"].as<String>();
-          if (doc["influxPort"].is<int>())
-            appConfig.influxPort = doc["influxPort"];
-          if (doc["pushStatsInterval"].is<int>())
-            appConfig.pushStatsInterval = doc["pushStatsInterval"];
-          if (doc["measurementName"].is<const char *>())
-            appConfig.measurementName = doc["measurementName"].as<String>();
-          if (doc["minSecondsNodeUpdates"].is<int>())
-            appConfig.minSecondsNodeUpdates = doc["minSecondsNodeUpdates"];
-          if (doc["minSecondsNodeTableUpdates"].is<int>())
-            appConfig.minSecondsNodeTableUpdates =
-                doc["minSecondsNodeTableUpdates"];
-          if (doc["otaUser"].is<const char *>()) {
-            String val = doc["otaUser"].as<String>();
-            if (val.length() > 0)
-              appConfig.otaUser = val;
+          Config cfg;
+          {
+            std::lock_guard<std::mutex> lock(dataMutex);
+            if (doc["hostname"].is<const char *>())
+              appConfig.hostname = doc["hostname"].as<String>();
+            if (doc["txPin"].is<int>())
+              appConfig.txPin = doc["txPin"];
+            if (doc["rxPin"].is<int>())
+              appConfig.rxPin = doc["rxPin"];
+            if (doc["enPin"].is<int>())
+              appConfig.enPin = doc["enPin"];
+            if (doc["influxHost"].is<const char *>())
+              appConfig.influxHost = doc["influxHost"].as<String>();
+            if (doc["influxPort"].is<int>())
+              appConfig.influxPort = doc["influxPort"];
+            if (doc["pushStatsInterval"].is<int>())
+              appConfig.pushStatsInterval = doc["pushStatsInterval"];
+            if (doc["measurementName"].is<const char *>())
+              appConfig.measurementName = doc["measurementName"].as<String>();
+            if (doc["minSecondsNodeUpdates"].is<int>())
+              appConfig.minSecondsNodeUpdates = doc["minSecondsNodeUpdates"];
+            if (doc["minSecondsNodeTableUpdates"].is<int>())
+              appConfig.minSecondsNodeTableUpdates =
+                  doc["minSecondsNodeTableUpdates"];
+            if (doc["otaUser"].is<const char *>()) {
+              String val = doc["otaUser"].as<String>();
+              if (val.length() > 0)
+                appConfig.otaUser = val;
+            }
+            if (doc["otaPass"].is<const char *>()) {
+              String val = doc["otaPass"].as<String>();
+              if (val.length() > 0)
+                appConfig.otaPass = val;
+            }
+            if (doc["mqttHost"].is<const char *>())
+              appConfig.mqttHost = doc["mqttHost"].as<String>();
+            if (doc["mqttPort"].is<int>())
+              appConfig.mqttPort = doc["mqttPort"];
+            if (doc["mqttUser"].is<const char *>())
+              appConfig.mqttUser = doc["mqttUser"].as<String>();
+            if (doc["mqttPass"].is<const char *>()) {
+              String val = doc["mqttPass"].as<String>();
+              if (val.length() > 0)
+                appConfig.mqttPass = val;
+            }
+            if (doc["mqttTopic"].is<const char *>()) {
+              String val = doc["mqttTopic"].as<String>();
+              val.trim();
+              while (val.endsWith("/"))
+                val.remove(val.length() - 1);
+              if (val.length() > 0)
+                appConfig.mqttTopic = val;
+            }
+            if (doc["mqttInterval"].is<int>())
+              appConfig.mqttInterval = max(1, doc["mqttInterval"].as<int>());
+            if (doc["mqttDiscovery"].is<bool>())
+              appConfig.mqttDiscovery = doc["mqttDiscovery"];
+            cfg = appConfig;
           }
-          if (doc["otaPass"].is<const char *>()) {
-            String val = doc["otaPass"].as<String>();
-            if (val.length() > 0)
-              appConfig.otaPass = val;
-          }
-          if (doc["mqttHost"].is<const char *>())
-            appConfig.mqttHost = doc["mqttHost"].as<String>();
-          if (doc["mqttPort"].is<int>())
-            appConfig.mqttPort = doc["mqttPort"];
-          if (doc["mqttUser"].is<const char *>())
-            appConfig.mqttUser = doc["mqttUser"].as<String>();
-          if (doc["mqttPass"].is<const char *>()) {
-            String val = doc["mqttPass"].as<String>();
-            if (val.length() > 0)
-              appConfig.mqttPass = val;
-          }
-          if (doc["mqttTopic"].is<const char *>()) {
-            String val = doc["mqttTopic"].as<String>();
-            val.trim();
-            while (val.endsWith("/"))
-              val.remove(val.length() - 1);
-            if (val.length() > 0)
-              appConfig.mqttTopic = val;
-          }
-          if (doc["mqttInterval"].is<int>())
-            appConfig.mqttInterval = max(1, doc["mqttInterval"].as<int>());
-          if (doc["mqttDiscovery"].is<bool>())
-            appConfig.mqttDiscovery = doc["mqttDiscovery"];
 
-          saveSettings();
-          applyMqttSettings();
+          saveSettings(cfg);
+          applyMqttSettings(cfg);
           request->send(200, "text/plain", "OK");
         } else {
           request->send(400, "text/plain", "Invalid JSON");
@@ -997,7 +1013,16 @@ void loop() {
   }
 
   // Process parsed frames
+  bool hasFrameCfg = false;
+  int minNodeUpdates = 0;
+  String measName;
   while (parser.hasFrames()) {
+    if (!hasFrameCfg) {
+      std::lock_guard<std::mutex> lock(dataMutex);
+      minNodeUpdates = appConfig.minSecondsNodeUpdates;
+      measName = appConfig.measurementName;
+      hasFrameCfg = true;
+    }
     std::unique_ptr<TigoFrame> frame = parser.popFrame();
 
     switch (frame->getType()) {
@@ -1015,8 +1040,7 @@ void loop() {
           shouldSend = true;
         } else {
           if (currentTime - lastUpdateTimes[powerFrame->pv_node_id] >
-              static_cast<unsigned long>(appConfig.minSecondsNodeUpdates) *
-                  1000) {
+              static_cast<unsigned long>(minNodeUpdates) * 1000) {
             shouldSend = true;
           }
         }
@@ -1025,7 +1049,7 @@ void loop() {
           if (nodeAccumulators[powerFrame->pv_node_id].hasSamples()) {
             std::string lineProtocol =
                 nodeAccumulators[powerFrame->pv_node_id].toInfluxLineProtocol(
-                    appConfig.measurementName.c_str(), powerFrame->address,
+                    measName.c_str(), powerFrame->address,
                     powerFrame->pv_node_id);
 
             // Send over UDP
@@ -1062,15 +1086,14 @@ void loop() {
           shouldSend = true;
         } else {
           if (currentTime - lastUpdateTimesAnnounce[announceFrame->pv_node_id] >
-              static_cast<unsigned long>(appConfig.minSecondsNodeUpdates) *
-                  1000) {
+              static_cast<unsigned long>(minNodeUpdates) * 1000) {
             shouldSend = true;
           }
         }
 
         if (shouldSend && WiFi.status() == WL_CONNECTED) {
-          std::string lineProtocol = announceFrame->toInfluxLineProtocol(
-              appConfig.measurementName.c_str());
+          std::string lineProtocol =
+              announceFrame->toInfluxLineProtocol(measName.c_str());
 
           // Send over UDP
           sendUdpPayload(lineProtocol);
@@ -1098,11 +1121,9 @@ void loop() {
       TigoNodeTableFrame *nodeTableFrame =
           static_cast<TigoNodeTableFrame *>(frame.get());
       if (nodeTableFrame) {
-        unsigned long currentTime = millis();
-
         if (WiFi.status() == WL_CONNECTED) {
-          std::string lineProtocol = nodeTableFrame->toInfluxLineProtocol(
-              appConfig.measurementName.c_str());
+          std::string lineProtocol =
+              nodeTableFrame->toInfluxLineProtocol(measName.c_str());
 
           // Send over UDP
           sendUdpPayload(lineProtocol);
@@ -1137,13 +1158,26 @@ void loop() {
     }
   }
 
+  int pushStatsInterval;
+  int mqttInterval;
+  {
+    std::lock_guard<std::mutex> lock(dataMutex);
+    pushStatsInterval = appConfig.pushStatsInterval;
+    mqttInterval = appConfig.mqttInterval;
+  }
+
   // Send Statistics periodically
   if (millis() - lastStatsTime >
-          static_cast<unsigned long>(appConfig.pushStatsInterval) * 1000 &&
+          static_cast<unsigned long>(pushStatsInterval) * 1000 &&
       WiFi.status() == WL_CONNECTED) {
     lastStatsTime = millis();
-    std::string statsLine = parser.getStatisticsInfluxLineProtocol(
-        appConfig.measurementName.c_str());
+    String measName;
+    {
+      std::lock_guard<std::mutex> lock(dataMutex);
+      measName = appConfig.measurementName;
+    }
+    std::string statsLine =
+        parser.getStatisticsInfluxLineProtocol(measName.c_str());
     statsLine +=
         ",uptime=" + std::to_string(esp_timer_get_time() / 1000000) + "i";
 
@@ -1156,7 +1190,7 @@ void loop() {
   // Publish data points to MQTT periodically
   if (mqtt.isConnected() &&
       millis() - lastMqttTime >
-          static_cast<unsigned long>(appConfig.mqttInterval) * 1000) {
+          static_cast<unsigned long>(mqttInterval) * 1000) {
     lastMqttTime = millis();
     publishMqtt();
   }
