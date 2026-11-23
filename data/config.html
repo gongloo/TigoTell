@@ -245,12 +245,12 @@
                         <input type="number" id="mqttInterval" name="mqttInterval" min="1" max="3600">
                     </div>
                 </div>
-                <p class="help-text">Publishes JSON to &lt;base&gt;/node/&lt;id&gt; per module and &lt;base&gt;/stats; &lt;base&gt;/status is online/offline (retained).</p>
+                <p class="help-text">Publishes JSON to &lt;base&gt;/node/&lt;id&gt; per module, &lt;base&gt;/tap/&lt;id&gt; per TAP, and &lt;base&gt;/stats; &lt;base&gt;/status is online/offline (retained).</p>
                 <label class="checkbox-row" for="mqttDiscovery">
                     <input type="checkbox" id="mqttDiscovery" name="mqttDiscovery">
                     <span>Home Assistant Discovery</span>
                 </label>
-                <p class="help-text">Announces TigoTell and every module as devices with sensors under homeassistant/device/… (retained). Requires Home Assistant 2024.11 or newer.</p>
+                <p class="help-text">Announces TigoTell, every module, and every TAP as devices with sensors under homeassistant/device/… (retained). Requires Home Assistant 2024.11 or newer.</p>
             </section>
 
             <section class="card config-card">

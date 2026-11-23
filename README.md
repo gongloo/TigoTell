@@ -167,14 +167,15 @@ Every publish interval, TigoTell sends (base topic defaults to `tigotell`):
 | Topic | Payload |
 | --- | --- |
 | `tigotell/node/<pv_node_id>` | `{"pv_node_id","address","barcode","power","voltage_in","voltage_out","current_in","temperature","duty_cycle","rssi","age_s"}` for each module heard from within the last 60 s |
+| `tigotell/tap/<id>` | `{"id","state","last_seen_s","polls","answered","missed","recent_answered_pct","rx_buffers_used","rx_buffers_max","tx_buffers_free","tx_buffers_min","slot_counter","packets","power_reports","modules","rssi_avg","rssi_min","barcode","version","radio_channel","pan_id"}` for each TAP seen on the bus |
 | `tigotell/stats` | `{"total_power","active_nodes","known_nodes","total_frames","crc_errors","power_count","announce_count","nodetable_count","uptime_s","version"}` |
 | `tigotell/status` | `online` / `offline` (retained, Last Will) |
 
-Units: W, V, A, °C, dBm. Values are the latest reading per module (as on the dashboard), not interval averages.
+Units: W, V, A, °C; `rssi` is a raw 0–255 signal value. Values are the latest reading per module (as on the dashboard), not interval averages.
 
 #### Home Assistant
 
-With **Home Assistant Discovery** enabled (default), TigoTell announces itself and every module as Home Assistant devices with sensors (power, voltages, current, temperature, plus diagnostic duty cycle/RSSI; total power, active modules, CRC errors and uptime for TigoTell itself). Configs are sent retained to `homeassistant/device/<id>/config` using device-based discovery (Home Assistant 2024.11+), and re-sent whenever Home Assistant restarts. Module sensors become unavailable when a module stops reporting (e.g. at night). For the Energy dashboard, add an *Integral* helper on a power sensor.
+With **Home Assistant Discovery** enabled (default), TigoTell announces itself, every module, and every TAP as Home Assistant devices with sensors (power, voltages, current, temperature, plus diagnostic duty cycle/RSSI for modules; connection, polls answered, modules, average module signal, buffers and missed polls for TAPs; total power, active modules, CRC errors and uptime for TigoTell itself). Configs are sent retained to `homeassistant/device/<id>/config` using device-based discovery (Home Assistant 2024.11+), and re-sent whenever Home Assistant restarts. Module sensors become unavailable when a module stops reporting (e.g. at night). For the Energy dashboard, add an *Integral* helper on a power sensor.
 
 Alternatively, [miketkf/ha-tigotell](https://github.com/miketkf/ha-tigotell) provides a separate Home Assistant integration for TigoTell.
 

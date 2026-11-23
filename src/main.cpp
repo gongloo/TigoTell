@@ -500,7 +500,7 @@ bool publishHaNodeDiscovery(uint16_t nodeId, const std::string &barcode,
               "°C", "measurement", false);
   addHaSensor(cmps, uidBase, "duty_cycle", "Duty cycle", nullptr, nullptr,
               "measurement", true);
-  addHaSensor(cmps, uidBase, "rssi", "RSSI", "signal_strength", "dBm",
+  addHaSensor(cmps, uidBase, "rssi", "RSSI", nullptr, nullptr,
               "measurement", true);
 
   return sendHaDiscovery(doc, uidBase, "node/" + String(nodeId), cfg);
