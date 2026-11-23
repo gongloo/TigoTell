@@ -176,8 +176,8 @@ void loop(bool paused) {
   }
 
   // WiFi: nudge a reconnect, and restart if WiFi stays gone (after a restart,
-  // the boot-time connect retries the saved network). Never while someone
-  // uses the setup portal.
+  // the boot-time connect retries the saved network). Never while paused or
+  // while SoftAP mode is active.
   if (WiFi.status() == WL_CONNECTED) {
     if (wifiOfflineSinceMs != 0 || wifiConnectedSinceMs == 0) {
       wifiConnectedSinceMs = now;
@@ -188,12 +188,13 @@ void loop(bool paused) {
     wifiOfflineSinceMs = 0;
     return;
   }
+  bool portalInUse = (WiFi.getMode() & WIFI_MODE_AP) != 0;
+  if (paused || portalInUse) {
+    wifiOfflineSinceMs = 0;
+    return;
+  }
   if (wifiOfflineSinceMs == 0)
     wifiOfflineSinceMs = now == 0 ? 1 : now;
-  bool portalInUse =
-      (WiFi.getMode() & WIFI_MODE_AP) && WiFi.softAPgetStationNum() > 0;
-  if (paused || portalInUse)
-    return;
   uint32_t offline = now - wifiOfflineSinceMs;
   if (offline > kWifiRestartAfterMs)
     restart("WiFi lost for 10 minutes");
