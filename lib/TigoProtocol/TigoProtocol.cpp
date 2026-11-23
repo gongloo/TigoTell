@@ -288,7 +288,7 @@ std::string tigoBarcode(const uint8_t *a) {
   for (int i = 3; i < 8; i++) {
     for (int half = (i == 3 ? 1 : 0); half < 2; half++) {
       uint8_t nibble = half == 0 ? a[i] >> 4 : a[i] & 0x0F;
-      if (skipping && nibble == 0)
+      if (skipping && nibble == 0 && !(i == 7 && half == 1))
         continue;
       skipping = false;
       out += hex[nibble];
