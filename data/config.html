@@ -205,8 +205,9 @@
                 <p class="help-text">Minimum time between sending updates for individual nodes and the full table.</p>
             </section>
             
-            <section class="card config-card">
+            <section class="card config-card" id="ota">
                 <h2>OTA Authentication (ElegantOTA)</h2>
+                <p id="ota-status" class="help-text"></p>
                 <div class="grid-2">
                     <div>
                         <label for="otaUser">OTA Username</label>
@@ -217,7 +218,7 @@
                         <input type="password" id="otaPass" name="otaPass" placeholder="Keep current">
                     </div>
                 </div>
-                <p class="help-text">Leave both blank to keep current credentials. Use "..." to disable ElegantOTA.</p>
+                <p class="help-text">Leave both blank to keep current credentials. Use "..." to disable ElegantOTA. Changes take effect after a reboot.</p>
             </section>
 
             <div class="button-group">
@@ -245,6 +246,11 @@
             try {
                 const response = await fetch('/api/config');
                 const config = await response.json();
+                const otaStatus = document.getElementById('ota-status');
+                otaStatus.innerHTML = config.otaEnabled
+                    ? 'Firmware upload page is active at <a href="/update">/update</a>.'
+                    : 'Firmware upload page is disabled. Set a username and password, save, then reboot.';
+                otaStatus.style.color = config.otaEnabled ? 'var(--success)' : 'var(--warning)';
                 for (const key in config) {
                     const input = document.getElementById(key);
                     if (input) {

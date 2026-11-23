@@ -13,6 +13,8 @@
 #include <memory>
 #include <mutex>
 
+#include "RepoInfo.h"
+#include "TaskLog.h"
 #include "PowerStatsAccumulator.h"
 #include "TigoProtocol.h"
 #include "Version.h"
@@ -99,21 +101,21 @@ volatile bool isUpdatingOTA = false;
 
 void onOTAStart() {
   isUpdatingOTA = true;
-  WebSerial.println("OTA Update Started. Pausing reads from Tigo...");
+  taskLog.println("OTA Update Started. Pausing reads from Tigo...");
 }
 
 void onOTAEnd(bool success) {
   isUpdatingOTA = false;
   if (success) {
-    WebSerial.println("OTA Update Successful!");
+    taskLog.println("OTA Update Successful!");
   } else {
-    WebSerial.println("OTA Update Failed!");
+    taskLog.println("OTA Update Failed!");
   }
 }
 
 void runOtaUpdate(void *parameter) {
   onOTAStart();
-  GithubReleaseOTA ota("gongloo", "TigoTell");
+  GithubReleaseOTA ota(TIGOTELL_REPO_OWNER, TIGOTELL_REPO_NAME);
   GithubRelease release = ota.getLatestRelease();
   if (release.tag_name != NULL) {
     // Normalize versions for comparison
@@ -125,22 +127,22 @@ void runOtaUpdate(void *parameter) {
     bool fwNeedsUpdate = (fwCurrent != latest);
     bool fsNeedsUpdate = (fsVersion != latest);
 
-    WebSerial.printf("Versions - Current FW: %s, FS: %s | Latest: %s\n",
-                     fwCurrent.c_str(), fsVersion.c_str(), latest.c_str());
+    taskLog.printf("Versions - Current FW: %s, FS: %s | Latest: %s\n",
+                   fwCurrent.c_str(), fsVersion.c_str(), latest.c_str());
 
     if (fwNeedsUpdate || fsNeedsUpdate) {
       // 1. Unmount filesystem for safety
-      WebSerial.printf("Starting selective GitHub Update to v%s...",
-                       latest.c_str());
+      taskLog.printf("Starting selective GitHub Update to v%s...",
+                     latest.c_str());
       delay(100);
       yield();
 
       // 2. Flash Firmware if out of date (Priority)
       if (fwNeedsUpdate) {
         if (ota.flashFirmware(release, "firmware.bin") == OTA_SUCCESS) {
-          WebSerial.println("Firmware updated successfully.");
+          taskLog.println("Firmware updated successfully.");
         } else {
-          WebSerial.println("Firmware update FAILED or asset missing.");
+          taskLog.println("Firmware update FAILED or asset missing.");
         }
         delay(500);
         yield();
@@ -150,9 +152,9 @@ void runOtaUpdate(void *parameter) {
       if (fsNeedsUpdate) {
         LittleFS.end();
         if (ota.flashSpiffs(release, "littlefs.bin") == OTA_SUCCESS) {
-          WebSerial.println("FileSystem updated successfully.");
+          taskLog.println("FileSystem updated successfully.");
         } else {
-          WebSerial.println("FileSystem update FAILED or asset missing.");
+          taskLog.println("FileSystem update FAILED or asset missing.");
         }
         delay(500);
         yield();
@@ -160,16 +162,16 @@ void runOtaUpdate(void *parameter) {
 
       ota.freeRelease(release);
       onOTAEnd(true);
-      WebSerial.println("Update sequence complete. Rebooting...");
+      taskLog.println("Update sequence complete. Rebooting...");
       delay(3000);
       ESP.restart();
     } else {
-      WebSerial.println("Everything is already up to date.");
+      taskLog.println("Everything is already up to date.");
       ota.freeRelease(release);
       onOTAEnd(true);
     }
   } else {
-    WebSerial.println("Failed to fetch latest release for update.");
+    taskLog.println("Failed to fetch latest release for update.");
     onOTAEnd(false);
   }
   vTaskDelete(NULL);
@@ -327,6 +329,7 @@ void setup() {
     doc["measurementName"] = appConfig.measurementName;
     doc["minSecondsNodeUpdates"] = appConfig.minSecondsNodeUpdates;
     doc["minSecondsNodeTableUpdates"] = appConfig.minSecondsNodeTableUpdates;
+    doc["otaEnabled"] = isElegantOtaStarted;
 
     AsyncResponseStream *response =
         request->beginResponseStream("application/json");
@@ -398,7 +401,7 @@ void setup() {
   server.on("/api/update/check", HTTP_GET, [](AsyncWebServerRequest *request) {
     // We do the check in-request, which might be slow.
     // GitHub API can take a second or two.
-    GithubReleaseOTA ota("gongloo", "TigoTell");
+    GithubReleaseOTA ota(TIGOTELL_REPO_OWNER, TIGOTELL_REPO_NAME);
 
     // Optional: Set insecure if certificates are a pain, but let's try defaults
     // first ota.setInsecure();
@@ -414,7 +417,7 @@ void setup() {
       doc["latest_version"] = latest;
       String current = String(VERSION);
 
-      WebSerial.printf(
+      taskLog.printf(
           "[UpdateCheck] FW Current: %s, FS Current: %s, Github Latest: %s\n",
           current.c_str(), fsVersion.c_str(), latest.c_str());
 
@@ -457,11 +460,27 @@ void setup() {
   } else {
     isElegantOtaStarted = false;
     Serial.println("ElegantOTA disabled (no credentials).");
+    // Explain instead of answering "Not found".
+    server.on("/update", HTTP_GET, [](AsyncWebServerRequest *request) {
+      request->send(
+          503, "text/html",
+          "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"UTF-8\">"
+          "<meta name=\"viewport\" content=\"width=device-width, "
+          "initial-scale=1.0\"><title>Firmware update disabled</title>"
+          "<link rel=\"stylesheet\" href=\"/style.css\"></head><body>"
+          "<div class=\"container\"><header><h1>Firmware update disabled"
+          "</h1></header><p>The firmware upload page needs a username and "
+          "password.</p><p>Set them under <a href=\"/config.html#ota\">"
+          "Settings &rsaquo; OTA Authentication</a>, save, then reboot the "
+          "device.</p><p><a href=\"/\">Back to dashboard</a></p></div>"
+          "</body></html>");
+    });
   }
   server.begin();
 }
 
 void loop() {
+  taskLog.flush();
   netWizard.loop();
   if (isElegantOtaStarted) {
     ElegantOTA.loop();
