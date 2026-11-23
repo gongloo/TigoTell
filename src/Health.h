@@ -14,7 +14,7 @@ void begin();
 // Call from loop(). `paused` suspends self-healing restarts (e.g. during OTA).
 void loop(bool paused);
 
-// Records why we restart deliberately, then restarts.
+// Records why we restart deliberately, then restarts. Call from loop() only.
 [[noreturn]] void restart(const char *cause);
 
 void toJson(JsonObject o);

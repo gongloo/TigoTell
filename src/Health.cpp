@@ -3,6 +3,7 @@
 #include "TaskLog.h"
 
 #include <Preferences.h>
+#include <WebSerial.h>
 #include <WiFi.h>
 #include <atomic>
 #include <esp_core_dump.h>
@@ -33,8 +34,11 @@ constexpr uint32_t kRtcMagic = 0x7160A11E;
 RTC_NOINIT_ATTR RtcRun rtcRun;
 
 uint32_t rtcCheck(const RtcRun &r) {
-  return r.magic ^ r.uptimeS ^ (r.heapMin * 31) ^ (r.maxBlockMin * 17) ^
-         (r.wifiDisconnects * 7) ^ 0x5A5A5A5A;
+  uint32_t h = r.magic ^ r.uptimeS ^ (r.heapMin * 31) ^ (r.maxBlockMin * 17) ^
+               (r.wifiDisconnects * 7) ^ 0x5A5A5A5A;
+  for (unsigned char c : r.restartCause)
+    h = (h * 33) ^ c;
+  return h;
 }
 
 // Snapshot taken at boot.
@@ -57,6 +61,21 @@ uint64_t nowMs() { return static_cast<uint64_t>(esp_timer_get_time() / 1000); }
 
 uint64_t elapsedMs(uint64_t now, uint64_t since) {
   return now >= since ? now - since : 0;
+}
+
+uint32_t updateMaxBlockMin(uint32_t block) {
+  uint32_t minBlock =
+      std::min(maxBlockMin.load(std::memory_order_relaxed), block);
+  maxBlockMin.store(minBlock, std::memory_order_relaxed);
+  return minBlock;
+}
+
+void snapshotRtc(uint64_t now, uint32_t blockMin) {
+  rtcRun.uptimeS = static_cast<uint32_t>(now / 1000);
+  rtcRun.heapMin = ESP.getMinFreeHeap();
+  rtcRun.maxBlockMin = blockMin;
+  rtcRun.wifiDisconnects = wifiDisconnects.load(std::memory_order_relaxed);
+  rtcRun.check = rtcCheck(rtcRun);
 }
 
 const char *resetReasonText(esp_reset_reason_t r) {
@@ -151,11 +170,15 @@ void begin() {
 void restart(const char *cause) {
   strncpy(rtcRun.restartCause, cause, sizeof(rtcRun.restartCause) - 1);
   rtcRun.restartCause[sizeof(rtcRun.restartCause) - 1] = '\0';
-  rtcRun.check = rtcCheck(rtcRun);
+  snapshotRtc(nowMs(), updateMaxBlockMin(ESP.getMaxAllocHeap()));
   Serial.printf("Restarting: %s\n", cause);
   taskLog.printf("Restarting: %s", cause);
   taskLog.flush();
-  delay(200);
+  delay(1);
+  WebSerial.loop(); // >100 us: _print_buffer -> _buffer
+  delay(110);
+  WebSerial.loop(); // >100 ms: _buffer -> _ws->binaryAll()
+  delay(90);        // allow async_tcp to transmit
   ESP.restart();
   while (true) {
   }
@@ -168,14 +191,7 @@ void loop(bool paused) {
   if (elapsedMs(now, lastBeat) >= 1000) {
     lastBeat = now;
     uint32_t block = ESP.getMaxAllocHeap();
-    uint32_t minBlock =
-        std::min(maxBlockMin.load(std::memory_order_relaxed), block);
-    maxBlockMin.store(minBlock, std::memory_order_relaxed);
-    rtcRun.uptimeS = static_cast<uint32_t>(now / 1000);
-    rtcRun.heapMin = ESP.getMinFreeHeap();
-    rtcRun.maxBlockMin = minBlock;
-    rtcRun.wifiDisconnects = wifiDisconnects.load(std::memory_order_relaxed);
-    rtcRun.check = rtcCheck(rtcRun);
+    snapshotRtc(now, updateMaxBlockMin(block));
 
     // Memory: a fragmented heap starves the web server; restart cleanly
     // instead of limping on.
@@ -206,6 +222,7 @@ void loop(bool paused) {
     wifiOfflineSinceMs = 0;
     return;
   }
+  wifiConnectedSinceMs.store(0, std::memory_order_relaxed);
   bool portalInUse = (WiFi.getMode() & WIFI_MODE_AP) != 0;
   if (paused || portalInUse) {
     wifiOfflineSinceMs = 0;
@@ -248,8 +265,9 @@ void toJson(JsonObject o) {
   if (minBlock != UINT32_MAX)
     o["heap_max_block_min"] = minBlock;
   JsonObject w = o["wifi"].to<JsonObject>();
-  w["connected"] = WiFi.status() == WL_CONNECTED;
-  if (WiFi.status() == WL_CONNECTED) {
+  bool connected = WiFi.status() == WL_CONNECTED;
+  w["connected"] = connected;
+  if (connected) {
     w["rssi"] = WiFi.RSSI();
     uint64_t connSince = wifiConnectedSinceMs.load(std::memory_order_relaxed);
     w["connected_s"] =
