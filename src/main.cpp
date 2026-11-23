@@ -9,12 +9,12 @@
 #include <WebSerial.h>
 
 #include <cstdlib>
-#include <cstring>
 #include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
 #include <new>
+#include <string>
 
 #include "Health.h"
 #include "RepoInfo.h"
@@ -857,73 +857,46 @@ void setup() {
   });
 
   // Config POST endpoint
+  constexpr size_t kConfigMaxBytes = 4096;
+  struct ConfigUpload {
+    std::string body;
+    int errorStatus = 0; // 0 = ok, else 400 / 413
+  };
   server.on(
-      "/api/config", HTTP_POST, [](AsyncWebServerRequest *request) {}, NULL,
-      [](AsyncWebServerRequest *request, uint8_t *data, size_t len,
-         size_t index, size_t total) {
-        constexpr size_t kConfigMaxBytes = 4096;
-        struct ConfigUpload {
-          size_t total;
-          size_t received;
-          uint8_t *buf;
-          ~ConfigUpload() { delete[] buf; }
-        };
+      "/api/config", HTTP_POST,
+      [](AsyncWebServerRequest *request) {
+        std::unique_ptr<ConfigUpload> upload(
+            static_cast<ConfigUpload *>(request->_tempObject));
+        request->_tempObject = nullptr;
 
-        if (index == 0) {
-          if (total == 0) {
-            request->send(400, "text/plain", "Empty body");
-            return;
-          }
-          if (total > kConfigMaxBytes) {
-            request->send(413, "text/plain", "Payload too large");
-            return;
-          }
-          auto *upload = new (std::nothrow) ConfigUpload{total, 0, nullptr};
-          if (upload)
-            upload->buf = new (std::nothrow) uint8_t[total];
-          if (!upload || !upload->buf) {
-            delete upload;
-            request->send(503, "text/plain", "Out of memory");
-            return;
-          }
-          request->_tempObject = upload;
-          request->onDisconnect([request]() {
-            auto *u = static_cast<ConfigUpload *>(request->_tempObject);
-            if (u) {
-              delete u;
-              request->_tempObject = nullptr;
-            }
-          });
-        }
-
-        auto *upload = static_cast<ConfigUpload *>(request->_tempObject);
-        if (!upload)
+        if (!upload) {
+          bool hasBody = request->contentLength() > 0;
+          request->send(hasBody ? 503 : 400, "text/plain",
+                        hasBody ? "Out of memory" : "Empty body");
           return;
-        if (total != upload->total || len > total || index > total - len) {
-          delete upload;
-          request->_tempObject = nullptr;
+        }
+        if (upload->errorStatus == 413) {
+          request->send(413, "text/plain", "Payload too large");
+          return;
+        }
+        if (upload->errorStatus != 0) {
           request->send(400, "text/plain", "Invalid body size");
           return;
         }
-        if (len > 0)
-          memcpy(upload->buf + index, data, len);
-        upload->received += len;
-
-        if (index + len < total)
+        if (upload->body.empty()) {
+          request->send(400, "text/plain", "Empty body");
           return;
-
-        if (upload->received != total) {
-          delete upload;
-          request->_tempObject = nullptr;
+        }
+        if (request->contentLength() > 0 &&
+            upload->body.size() != request->contentLength()) {
           request->send(400, "text/plain", "Incomplete body");
           return;
         }
 
         JsonDocument doc;
         DeserializationError error =
-            deserializeJson(doc, upload->buf, total);
-        delete upload;
-        request->_tempObject = nullptr;
+            deserializeJson(doc, upload->body.data(), upload->body.size());
+        upload.reset();
 
         if (error) {
           if (error == DeserializationError::NoMemory) {
@@ -997,6 +970,40 @@ void setup() {
         saveSettings(cfg);
         applyMqttSettings(cfg);
         request->send(200, "text/plain", "OK");
+      },
+      NULL,
+      [](AsyncWebServerRequest *request, uint8_t *data, size_t len,
+         size_t index, size_t total) {
+        if (index == 0 && !request->_tempObject) {
+          auto *upload = new (std::nothrow) ConfigUpload{};
+          if (!upload)
+            return;
+          if (total > kConfigMaxBytes) {
+            upload->errorStatus = 413;
+          } else if (total > 0) {
+            upload->body.reserve(total);
+          }
+          request->_tempObject = upload;
+          request->onDisconnect([request]() {
+            delete static_cast<ConfigUpload *>(request->_tempObject);
+            request->_tempObject = nullptr;
+          });
+        }
+
+        auto *upload = static_cast<ConfigUpload *>(request->_tempObject);
+        if (!upload || upload->errorStatus != 0)
+          return;
+
+        if (index != upload->body.size() ||
+            len > kConfigMaxBytes - upload->body.size() ||
+            (total > 0 && (len > total || index > total - len))) {
+          upload->errorStatus =
+              (len > kConfigMaxBytes - upload->body.size()) ? 413 : 400;
+          upload->body.clear();
+          return;
+        }
+        if (len > 0)
+          upload->body.append(reinterpret_cast<const char *>(data), len);
       });
 
   // Reboot endpoint
