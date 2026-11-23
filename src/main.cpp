@@ -451,6 +451,97 @@ void publishMqtt() {
   tigoMqtt.publish(snap, mqtt.sink());
 }
 
+struct RequestBodyUpload {
+  std::string body;
+  int errorStatus = 0; // 0 = ok, else 400 / 413
+  size_t rejectedBytes = 0;
+};
+
+// Accumulate bounded raw request body chunks onto request->_tempObject.
+void accumulateRequestBody(AsyncWebServerRequest *request, uint8_t *data,
+                           size_t len, size_t index, size_t total,
+                           size_t maxBytes) {
+  if (index == 0 && !request->_tempObject) {
+    auto *upload = new (std::nothrow) RequestBodyUpload{};
+    if (!upload)
+      return;
+    if (total > maxBytes) {
+      upload->errorStatus = 413;
+      upload->rejectedBytes = total;
+    } else if (total > 0) {
+      upload->body.reserve(total);
+    }
+    request->_tempObject = upload;
+    request->onDisconnect([request]() {
+      delete static_cast<RequestBodyUpload *>(request->_tempObject);
+      request->_tempObject = nullptr;
+    });
+  }
+
+  auto *upload = static_cast<RequestBodyUpload *>(request->_tempObject);
+  if (!upload || upload->errorStatus != 0)
+    return;
+
+  if (index != upload->body.size() || len > maxBytes - upload->body.size() ||
+      (total > 0 && (len > total || index > total - len))) {
+    if (len > maxBytes - upload->body.size()) {
+      upload->errorStatus = 413;
+      upload->rejectedBytes =
+          total > 0 ? total
+                    : upload->body.size() + std::min(len, maxBytes + 1);
+    } else {
+      upload->errorStatus = 400;
+    }
+    upload->body.clear();
+    return;
+  }
+  if (len > 0)
+    upload->body.append(reinterpret_cast<const char *>(data), len);
+}
+
+// Take ownership of the accumulated upload and validate completeness.
+// Returns nullptr after sending an error response (invoking onTooLarge on 413).
+template <typename OnTooLarge>
+std::unique_ptr<RequestBodyUpload>
+takeUpload(AsyncWebServerRequest *request, OnTooLarge &&onTooLarge) {
+  std::unique_ptr<RequestBodyUpload> upload(
+      static_cast<RequestBodyUpload *>(request->_tempObject));
+  request->_tempObject = nullptr;
+
+  if (!upload) {
+    bool nonJson = request->multipart() ||
+                   request->contentType().startsWith(
+                       "application/x-www-form-urlencoded") ||
+                   request->params() > 0;
+    if (nonJson) {
+      request->send(400, "text/plain", "Expected application/json body");
+    } else if (request->contentLength() == 0) {
+      request->send(400, "text/plain", "Empty body");
+    } else {
+      request->send(503, "text/plain", "Out of memory");
+    }
+    return nullptr;
+  }
+  if (upload->errorStatus == 413) {
+    onTooLarge(upload->rejectedBytes);
+    return nullptr;
+  }
+  if (upload->errorStatus != 0) {
+    request->send(400, "text/plain", "Invalid body size");
+    return nullptr;
+  }
+  if (upload->body.empty()) {
+    request->send(400, "text/plain", "Empty body");
+    return nullptr;
+  }
+  if (request->contentLength() > 0 &&
+      upload->body.size() != request->contentLength()) {
+    request->send(400, "text/plain", "Incomplete body");
+    return nullptr;
+  }
+  return upload;
+}
+
 void setup() {
   health::begin();
   loadSettings();
@@ -631,49 +722,14 @@ void setup() {
 
   // Config POST endpoint
   constexpr size_t kConfigMaxBytes = 4096;
-  struct ConfigUpload {
-    std::string body;
-    int errorStatus = 0; // 0 = ok, else 400 / 413
-  };
   server.on(
       "/api/config", HTTP_POST,
       [](AsyncWebServerRequest *request) {
-        std::unique_ptr<ConfigUpload> upload(
-            static_cast<ConfigUpload *>(request->_tempObject));
-        request->_tempObject = nullptr;
-
-        if (!upload) {
-          bool nonJson = request->multipart() ||
-                         request->contentType().startsWith(
-                             "application/x-www-form-urlencoded") ||
-                         request->params() > 0;
-          if (nonJson) {
-            request->send(400, "text/plain",
-                          "Expected application/json body");
-          } else if (request->contentLength() == 0) {
-            request->send(400, "text/plain", "Empty body");
-          } else {
-            request->send(503, "text/plain", "Out of memory");
-          }
-          return;
-        }
-        if (upload->errorStatus == 413) {
+        auto upload = takeUpload(request, [request](size_t) {
           request->send(413, "text/plain", "Payload too large");
+        });
+        if (!upload)
           return;
-        }
-        if (upload->errorStatus != 0) {
-          request->send(400, "text/plain", "Invalid body size");
-          return;
-        }
-        if (upload->body.empty()) {
-          request->send(400, "text/plain", "Empty body");
-          return;
-        }
-        if (request->contentLength() > 0 &&
-            upload->body.size() != request->contentLength()) {
-          request->send(400, "text/plain", "Incomplete body");
-          return;
-        }
 
         JsonDocument doc;
         DeserializationError error =
@@ -767,36 +823,8 @@ void setup() {
       NULL,
       [](AsyncWebServerRequest *request, uint8_t *data, size_t len,
          size_t index, size_t total) {
-        if (index == 0 && !request->_tempObject) {
-          auto *upload = new (std::nothrow) ConfigUpload{};
-          if (!upload)
-            return;
-          if (total > kConfigMaxBytes) {
-            upload->errorStatus = 413;
-          } else if (total > 0) {
-            upload->body.reserve(total);
-          }
-          request->_tempObject = upload;
-          request->onDisconnect([request]() {
-            delete static_cast<ConfigUpload *>(request->_tempObject);
-            request->_tempObject = nullptr;
-          });
-        }
-
-        auto *upload = static_cast<ConfigUpload *>(request->_tempObject);
-        if (!upload || upload->errorStatus != 0)
-          return;
-
-        if (index != upload->body.size() ||
-            len > kConfigMaxBytes - upload->body.size() ||
-            (total > 0 && (len > total || index > total - len))) {
-          upload->errorStatus =
-              (len > kConfigMaxBytes - upload->body.size()) ? 413 : 400;
-          upload->body.clear();
-          return;
-        }
-        if (len > 0)
-          upload->body.append(reinterpret_cast<const char *>(data), len);
+        accumulateRequestBody(request, data, len, index, total,
+                              kConfigMaxBytes);
       });
 
   // Layout endpoints (designer page)
@@ -811,37 +839,55 @@ void setup() {
   server.on(
       "/api/layout", HTTP_POST,
       [](AsyncWebServerRequest *request) {
-        size_t capacity = layoutCapacity();
-        if (request->contentLength() > capacity) {
+        auto sendTooLarge = [request](size_t bytes, size_t capacity) {
           taskLog.printf("Layout: %u bytes rejected, room for %u bytes\n",
-                         request->contentLength(), capacity);
+                         static_cast<unsigned>(bytes),
+                         static_cast<unsigned>(capacity));
           AsyncWebServerResponse *response = request->beginResponse(
               413, "text/plain",
               "Layout too large: the device has room for " + String(capacity) +
                   " bytes");
           response->addHeader("X-Layout-Max", String(capacity));
           request->send(response);
+        };
+        auto upload = takeUpload(request, [&sendTooLarge](size_t bytes) {
+          sendTooLarge(bytes, layoutCapacity());
+        });
+        if (!upload)
+          return;
+
+        size_t capacity = layoutCapacity();
+        if (upload->body.size() > capacity) {
+          sendTooLarge(upload->body.size(), capacity);
           return;
         }
-        if (!request->_tempObject) {
-          request->send(400, "text/plain", "Empty body");
-          return;
+
+        {
+          JsonDocument doc;
+          DeserializationError err =
+              deserializeJson(doc, upload->body.data(), upload->body.size());
+          if (err == DeserializationError::NoMemory) {
+            request->send(503, "text/plain", "Out of memory");
+            return;
+          }
+          if (err || !doc.is<JsonObject>() || !doc["el"].is<JsonArray>()) {
+            request->send(400, "text/plain", "Invalid layout JSON");
+            return;
+          }
         }
-        const uint8_t *data = static_cast<const uint8_t *>(request->_tempObject);
-        size_t len = request->contentLength();
-        JsonDocument doc;
-        if (deserializeJson(doc, data, len) || !doc["el"].is<JsonArray>()) {
-          request->send(400, "text/plain", "Invalid layout JSON");
-          return;
-        }
+
+        size_t len = upload->body.size();
         unsigned long started = millis();
-        bool ok = saveLayout(data, len);
+        bool ok = saveLayout(
+            reinterpret_cast<const uint8_t *>(upload->body.data()), len);
+        upload.reset();
         nvs_stats_t stats = {};
         nvs_get_stats(NULL, &stats);
         taskLog.printf("Layout: %s %u bytes in %lu ms, NVS entries left %u, "
                        "free heap %u\n",
-                       ok ? "saved" : "FAILED to save", len,
-                       millis() - started, stats.available_entries,
+                       ok ? "saved" : "FAILED to save",
+                       static_cast<unsigned>(len), millis() - started,
+                       static_cast<unsigned>(stats.available_entries),
                        ESP.getFreeHeap());
         if (!ok) {
           request->send(507, "text/plain",
@@ -853,13 +899,8 @@ void setup() {
       NULL,
       [](AsyncWebServerRequest *request, uint8_t *data, size_t len,
          size_t index, size_t total) {
-        if (total > kLayoutMaxBytes)
-          return;
-        if (index == 0)
-          request->_tempObject = malloc(total);
-        if (request->_tempObject)
-          memcpy(static_cast<uint8_t *>(request->_tempObject) + index, data,
-                 len);
+        accumulateRequestBody(request, data, len, index, total,
+                              kLayoutMaxBytes);
       });
 
   // Reboot endpoint
