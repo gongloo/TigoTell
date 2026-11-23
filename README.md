@@ -143,4 +143,4 @@ This project stands on the shoulders of the incredible reverse-engineering work 
 
 ## 📄 License
 
-MIT, see [LICENSE](LICENSE); the original copyright notice is retained. The firmware links third-party libraries under their own licenses, including AGPL-3.0 and LGPL-3.0 libraries; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
+MIT, see [LICENSE](LICENSE). The firmware links third-party libraries under their own licenses, including AGPL-3.0 and LGPL-3.0 libraries; see [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
