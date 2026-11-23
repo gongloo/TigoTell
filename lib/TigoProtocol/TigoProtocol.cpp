@@ -395,10 +395,15 @@ void TigoParser::trackGateway(const std::vector<uint8_t> &payload) {
       gatewayBarcodes[id] = tigoBarcode(&payload[4]);
     break;
   case 0x000B: { // version response: text with CR separators
-    std::string v(payload.begin() + 4, payload.end());
-    for (char &c : v)
-      if (c == '\r' || c == '\n')
-        c = ' ';
+    std::string v;
+    v.reserve(std::min<size_t>(payload.size() - 4, 120));
+    for (size_t i = 4; i < payload.size(); i++) {
+      uint8_t b = payload[i];
+      if (b == '\r' || b == '\n')
+        v += ' ';
+      else if (b >= 0x20 && b <= 0x7E)
+        v += static_cast<char>(b);
+    }
     while (!v.empty() && v.back() == ' ')
       v.pop_back();
     gw.version = v.substr(0, 120);
