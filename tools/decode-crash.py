@@ -41,7 +41,7 @@ def parse_report(report: str):
     header = report.split(",")[0].strip()
     pc_match = re.search(r"\bPC\s+(0x[0-9a-fA-F]+)", report)
     addr_match = re.search(r"\baddr\s+(0x[0-9a-fA-F]+)", report)
-    bt_match = re.search(r"\bbacktrace\b(.*?)(?:\|corrupted|$)", report)
+    bt_match = re.search(r"\bbacktrace\b(.*?)(?:\|corrupted|$)", report, re.DOTALL)
     bt_addrs = re.findall(r"0x[0-9a-fA-F]+", bt_match.group(1)) if bt_match else []
     return {
         "header": header,
