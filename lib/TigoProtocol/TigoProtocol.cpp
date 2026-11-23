@@ -382,8 +382,12 @@ void TigoParser::trackGateway(const std::vector<uint8_t> &payload) {
     break;
   case 0x0B10:
     gw.commands++;
-    if (payload.size() >= 6)
+    if (payload.size() >= 6) {
       gw.txBuffersFree = payload[5];
+      gw.txBuffersMin = gw.txBuffersMin < 0
+                            ? gw.txBuffersFree
+                            : std::min(gw.txBuffersMin, gw.txBuffersFree);
+    }
     // Gateway radio configuration response (PV packet type 0E).
     if (payload.size() >= 13 && payload[7] == 0x0E) {
       gw.radioChannel = payload[10];
