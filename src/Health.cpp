@@ -4,6 +4,7 @@
 
 #include <Preferences.h>
 #include <WiFi.h>
+#include <atomic>
 #include <esp_core_dump.h>
 #include <esp_system.h>
 #include <esp_timer.h>
@@ -44,13 +45,13 @@ String crashSummary; // most recent crash, persisted in NVS
 uint32_t crashCount = 0;
 
 // Runtime state.
-volatile uint32_t wifiDisconnects = 0;
-volatile uint8_t lastDisconnectReason = 0;
-uint64_t wifiConnectedSinceMs = 0;
+std::atomic<uint32_t> wifiDisconnects{0};
+std::atomic<uint8_t> lastDisconnectReason{0};
+std::atomic<uint64_t> wifiConnectedSinceMs{0};
 uint64_t wifiOfflineSinceMs = 0;
 uint64_t lastReconnectMs = 0;
 uint64_t lowMemorySinceMs = 0;
-uint32_t maxBlockMin = UINT32_MAX;
+std::atomic<uint32_t> maxBlockMin{UINT32_MAX};
 
 uint64_t nowMs() { return static_cast<uint64_t>(esp_timer_get_time() / 1000); }
 
@@ -121,8 +122,9 @@ void readCrashReport() {
 
 void onWifiEvent(arduino_event_id_t event, arduino_event_info_t info) {
   if (event == ARDUINO_EVENT_WIFI_STA_DISCONNECTED) {
-    wifiDisconnects++;
-    lastDisconnectReason = info.wifi_sta_disconnected.reason;
+    wifiDisconnects.fetch_add(1, std::memory_order_relaxed);
+    lastDisconnectReason.store(info.wifi_sta_disconnected.reason,
+                               std::memory_order_relaxed);
   }
 }
 
@@ -166,11 +168,13 @@ void loop(bool paused) {
   if (elapsedMs(now, lastBeat) >= 1000) {
     lastBeat = now;
     uint32_t block = ESP.getMaxAllocHeap();
-    maxBlockMin = std::min(maxBlockMin, block);
+    uint32_t minBlock =
+        std::min(maxBlockMin.load(std::memory_order_relaxed), block);
+    maxBlockMin.store(minBlock, std::memory_order_relaxed);
     rtcRun.uptimeS = static_cast<uint32_t>(now / 1000);
     rtcRun.heapMin = ESP.getMinFreeHeap();
-    rtcRun.maxBlockMin = maxBlockMin;
-    rtcRun.wifiDisconnects = wifiDisconnects;
+    rtcRun.maxBlockMin = minBlock;
+    rtcRun.wifiDisconnects = wifiDisconnects.load(std::memory_order_relaxed);
     rtcRun.check = rtcCheck(rtcRun);
 
     // Memory: a fragmented heap starves the web server; restart cleanly
@@ -190,8 +194,10 @@ void loop(bool paused) {
   // the boot-time connect retries the saved network). Never while paused or
   // while SoftAP mode is active.
   if (WiFi.status() == WL_CONNECTED) {
-    if (wifiOfflineSinceMs != 0 || wifiConnectedSinceMs == 0) {
-      wifiConnectedSinceMs = now == 0 ? 1 : now;
+    if (wifiOfflineSinceMs != 0 ||
+        wifiConnectedSinceMs.load(std::memory_order_relaxed) == 0) {
+      wifiConnectedSinceMs.store(now == 0 ? 1 : now,
+                                 std::memory_order_relaxed);
       if (wifiOfflineSinceMs != 0)
         taskLog.printf(
             "WiFi back after %lus",
@@ -238,19 +244,22 @@ void toJson(JsonObject o) {
   o["heap_free"] = ESP.getFreeHeap();
   o["heap_min"] = ESP.getMinFreeHeap();
   o["heap_max_block"] = ESP.getMaxAllocHeap();
-  if (maxBlockMin != UINT32_MAX)
-    o["heap_max_block_min"] = maxBlockMin;
+  uint32_t minBlock = maxBlockMin.load(std::memory_order_relaxed);
+  if (minBlock != UINT32_MAX)
+    o["heap_max_block_min"] = minBlock;
   JsonObject w = o["wifi"].to<JsonObject>();
   w["connected"] = WiFi.status() == WL_CONNECTED;
   if (WiFi.status() == WL_CONNECTED) {
     w["rssi"] = WiFi.RSSI();
-    uint64_t connSince = wifiConnectedSinceMs;
+    uint64_t connSince = wifiConnectedSinceMs.load(std::memory_order_relaxed);
     w["connected_s"] =
         (connSince ? elapsedMs(now, connSince) : 0) / 1000;
   }
-  w["disconnects"] = wifiDisconnects;
-  if (lastDisconnectReason)
-    w["last_disconnect_reason"] = lastDisconnectReason;
+  w["disconnects"] = wifiDisconnects.load(std::memory_order_relaxed);
+  uint8_t disconnectReason =
+      lastDisconnectReason.load(std::memory_order_relaxed);
+  if (disconnectReason)
+    w["last_disconnect_reason"] = disconnectReason;
 }
 
 } // namespace health
