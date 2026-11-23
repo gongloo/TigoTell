@@ -233,6 +233,7 @@ constexpr uint64_t kMqttStaleMs = 60000;
 // Home Assistant discovery state.
 String haDeviceId; // "tigotell_<last 3 MAC bytes>", set in setup()
 uint32_t lastDiscoveryGen = 0;
+bool discoveredDevice = false;
 // Discovered nodes; value = whether the barcode was known at the time, so the
 // config is re-sent once the barcode shows up.
 std::map<uint16_t, bool> discoveredNodes;
@@ -415,7 +416,7 @@ void addHaSensor(JsonObject cmps, const String &uidBase, const char *key,
 }
 
 // Fills the parts shared by all discovery messages and sends it retained.
-void sendHaDiscovery(JsonDocument &doc, const String &objectId,
+bool sendHaDiscovery(JsonDocument &doc, const String &objectId,
                      const String &stateSubTopic) {
   JsonObject origin = doc["o"].to<JsonObject>();
   origin["name"] = "TigoTell";
@@ -428,11 +429,11 @@ void sendHaDiscovery(JsonDocument &doc, const String &objectId,
 
   String payload;
   serializeJson(doc, payload);
-  mqtt.enqueueAbsolute("homeassistant/device/" + objectId + "/config", payload,
-                       true);
+  return mqtt.enqueueAbsolute("homeassistant/device/" + objectId + "/config",
+                              payload, true);
 }
 
-void publishHaSystemDiscovery() {
+bool publishHaSystemDiscovery() {
   JsonDocument doc;
   JsonObject dev = doc["dev"].to<JsonObject>();
   dev["ids"] = haDeviceId;
@@ -455,10 +456,10 @@ void publishHaSystemDiscovery() {
   addHaSensor(cmps, haDeviceId, "uptime_s", "Uptime", "duration", "s",
               nullptr, true);
 
-  sendHaDiscovery(doc, haDeviceId, "stats");
+  return sendHaDiscovery(doc, haDeviceId, "stats");
 }
 
-void publishHaNodeDiscovery(uint16_t nodeId, const std::string &barcode) {
+bool publishHaNodeDiscovery(uint16_t nodeId, const std::string &barcode) {
   String uidBase = haDeviceId + "_node_" + String(nodeId);
   JsonDocument doc;
   JsonObject dev = doc["dev"].to<JsonObject>();
@@ -486,10 +487,10 @@ void publishHaNodeDiscovery(uint16_t nodeId, const std::string &barcode) {
   addHaSensor(cmps, uidBase, "rssi", "RSSI", "signal_strength", "dBm",
               "measurement", true);
 
-  sendHaDiscovery(doc, uidBase, "node/" + String(nodeId));
+  return sendHaDiscovery(doc, uidBase, "node/" + String(nodeId));
 }
 
-void publishHaTapDiscovery(uint16_t id) {
+bool publishHaTapDiscovery(uint16_t id) {
   String hex = tapHexId(id);
   String uidBase = haDeviceId + "_tap_" + hex;
   JsonDocument doc;
@@ -523,7 +524,7 @@ void publishHaTapDiscovery(uint16_t id) {
   addHaSensor(cmps, uidBase, "missed", "Missed polls", nullptr, nullptr,
               "total_increasing", true);
 
-  sendHaDiscovery(doc, uidBase, "tap/" + hex);
+  return sendHaDiscovery(doc, uidBase, "tap/" + hex);
 }
 
 void publishMqtt() {
@@ -531,11 +532,16 @@ void publishMqtt() {
   uint64_t now = esp_timer_get_time() / 1000;
 
   bool discovery = appConfig.mqttDiscovery;
-  if (discovery && mqtt.discoveryGeneration() != lastDiscoveryGen) {
-    lastDiscoveryGen = mqtt.discoveryGeneration();
-    discoveredNodes.clear();
-    discoveredTaps.clear();
-    publishHaSystemDiscovery();
+  if (discovery) {
+    uint32_t gen = mqtt.discoveryGeneration();
+    if (gen != lastDiscoveryGen) {
+      lastDiscoveryGen = gen;
+      discoveredDevice = false;
+      discoveredNodes.clear();
+      discoveredTaps.clear();
+    }
+    if (!discoveredDevice && publishHaSystemDiscovery())
+      discoveredDevice = true;
   }
   float totalPower = 0;
   int activeNodes = 0;
@@ -562,8 +568,8 @@ void publishMqtt() {
       auto known = discoveredNodes.find(frame->pv_node_id);
       if (known == discoveredNodes.end() ||
           (!known->second && !barcode.empty())) {
-        publishHaNodeDiscovery(frame->pv_node_id, barcode);
-        discoveredNodes[frame->pv_node_id] = !barcode.empty();
+        if (publishHaNodeDiscovery(frame->pv_node_id, barcode))
+          discoveredNodes[frame->pv_node_id] = !barcode.empty();
       }
     }
     doc["power"] = power;
@@ -605,8 +611,8 @@ void publishMqtt() {
       bool hasBarcode = parser.getGatewayBarcodes().count(id) > 0;
       auto known = discoveredTaps.find(id);
       if (known == discoveredTaps.end() || (!known->second && hasBarcode)) {
-        publishHaTapDiscovery(id);
-        discoveredTaps[id] = hasBarcode;
+        if (publishHaTapDiscovery(id))
+          discoveredTaps[id] = hasBarcode;
       }
     }
     JsonDocument tapDoc;
