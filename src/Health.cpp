@@ -141,8 +141,11 @@ void begin() {
 
 void restart(const char *cause) {
   strncpy(rtcRun.restartCause, cause, sizeof(rtcRun.restartCause) - 1);
+  rtcRun.restartCause[sizeof(rtcRun.restartCause) - 1] = '\0';
   rtcRun.check = rtcCheck(rtcRun);
+  Serial.printf("Restarting: %s\n", cause);
   taskLog.printf("Restarting: %s", cause);
+  taskLog.flush();
   delay(200);
   ESP.restart();
   while (true) {
