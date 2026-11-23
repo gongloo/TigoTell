@@ -9,10 +9,12 @@
 #include <WebSerial.h>
 
 #include <cstdlib>
+#include <cstring>
 #include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <new>
 
 #include "Health.h"
 #include "RepoInfo.h"
@@ -859,75 +861,142 @@ void setup() {
       "/api/config", HTTP_POST, [](AsyncWebServerRequest *request) {}, NULL,
       [](AsyncWebServerRequest *request, uint8_t *data, size_t len,
          size_t index, size_t total) {
-        JsonDocument doc;
-        DeserializationError error = deserializeJson(doc, data, len);
-        if (!error) {
-          Config cfg;
-          {
-            std::lock_guard<std::mutex> lock(dataMutex);
-            if (doc["hostname"].is<const char *>())
-              appConfig.hostname = doc["hostname"].as<String>();
-            if (doc["txPin"].is<int>())
-              appConfig.txPin = doc["txPin"];
-            if (doc["rxPin"].is<int>())
-              appConfig.rxPin = doc["rxPin"];
-            if (doc["enPin"].is<int>())
-              appConfig.enPin = doc["enPin"];
-            if (doc["influxHost"].is<const char *>())
-              appConfig.influxHost = doc["influxHost"].as<String>();
-            if (doc["influxPort"].is<int>())
-              appConfig.influxPort = doc["influxPort"];
-            if (doc["pushStatsInterval"].is<int>())
-              appConfig.pushStatsInterval = doc["pushStatsInterval"];
-            if (doc["measurementName"].is<const char *>())
-              appConfig.measurementName = doc["measurementName"].as<String>();
-            if (doc["minSecondsNodeUpdates"].is<int>())
-              appConfig.minSecondsNodeUpdates = doc["minSecondsNodeUpdates"];
-            if (doc["minSecondsNodeTableUpdates"].is<int>())
-              appConfig.minSecondsNodeTableUpdates =
-                  doc["minSecondsNodeTableUpdates"];
-            if (doc["otaUser"].is<const char *>()) {
-              String val = doc["otaUser"].as<String>();
-              if (val.length() > 0)
-                appConfig.otaUser = val;
-            }
-            if (doc["otaPass"].is<const char *>()) {
-              String val = doc["otaPass"].as<String>();
-              if (val.length() > 0)
-                appConfig.otaPass = val;
-            }
-            if (doc["mqttHost"].is<const char *>())
-              appConfig.mqttHost = doc["mqttHost"].as<String>();
-            if (doc["mqttPort"].is<int>())
-              appConfig.mqttPort = doc["mqttPort"];
-            if (doc["mqttUser"].is<const char *>())
-              appConfig.mqttUser = doc["mqttUser"].as<String>();
-            if (doc["mqttPass"].is<const char *>()) {
-              String val = doc["mqttPass"].as<String>();
-              if (val.length() > 0)
-                appConfig.mqttPass = val;
-            }
-            if (doc["mqttTopic"].is<const char *>()) {
-              String val = doc["mqttTopic"].as<String>();
-              val.trim();
-              while (val.endsWith("/"))
-                val.remove(val.length() - 1);
-              if (val.length() > 0)
-                appConfig.mqttTopic = val;
-            }
-            if (doc["mqttInterval"].is<int>())
-              appConfig.mqttInterval = max(1, doc["mqttInterval"].as<int>());
-            if (doc["mqttDiscovery"].is<bool>())
-              appConfig.mqttDiscovery = doc["mqttDiscovery"];
-            cfg = appConfig;
-          }
+        constexpr size_t kConfigMaxBytes = 4096;
+        struct ConfigUpload {
+          size_t total;
+          size_t received;
+          uint8_t *buf;
+          ~ConfigUpload() { delete[] buf; }
+        };
 
-          saveSettings(cfg);
-          applyMqttSettings(cfg);
-          request->send(200, "text/plain", "OK");
-        } else {
-          request->send(400, "text/plain", "Invalid JSON");
+        if (index == 0) {
+          if (total == 0) {
+            request->send(400, "text/plain", "Empty body");
+            return;
+          }
+          if (total > kConfigMaxBytes) {
+            request->send(413, "text/plain", "Payload too large");
+            return;
+          }
+          auto *upload = new (std::nothrow) ConfigUpload{total, 0, nullptr};
+          if (upload)
+            upload->buf = new (std::nothrow) uint8_t[total];
+          if (!upload || !upload->buf) {
+            delete upload;
+            request->send(503, "text/plain", "Out of memory");
+            return;
+          }
+          request->_tempObject = upload;
+          request->onDisconnect([request]() {
+            auto *u = static_cast<ConfigUpload *>(request->_tempObject);
+            if (u) {
+              delete u;
+              request->_tempObject = nullptr;
+            }
+          });
         }
+
+        auto *upload = static_cast<ConfigUpload *>(request->_tempObject);
+        if (!upload)
+          return;
+        if (total != upload->total || len > total || index > total - len) {
+          delete upload;
+          request->_tempObject = nullptr;
+          request->send(400, "text/plain", "Invalid body size");
+          return;
+        }
+        if (len > 0)
+          memcpy(upload->buf + index, data, len);
+        upload->received += len;
+
+        if (index + len < total)
+          return;
+
+        if (upload->received != total) {
+          delete upload;
+          request->_tempObject = nullptr;
+          request->send(400, "text/plain", "Incomplete body");
+          return;
+        }
+
+        JsonDocument doc;
+        DeserializationError error =
+            deserializeJson(doc, upload->buf, total);
+        delete upload;
+        request->_tempObject = nullptr;
+
+        if (error) {
+          if (error == DeserializationError::NoMemory) {
+            request->send(503, "text/plain", "Out of memory");
+          } else {
+            request->send(400, "text/plain", "Invalid JSON");
+          }
+          return;
+        }
+
+        Config cfg;
+        {
+          std::lock_guard<std::mutex> lock(dataMutex);
+          if (doc["hostname"].is<const char *>())
+            appConfig.hostname = doc["hostname"].as<String>();
+          if (doc["txPin"].is<int>())
+            appConfig.txPin = doc["txPin"];
+          if (doc["rxPin"].is<int>())
+            appConfig.rxPin = doc["rxPin"];
+          if (doc["enPin"].is<int>())
+            appConfig.enPin = doc["enPin"];
+          if (doc["influxHost"].is<const char *>())
+            appConfig.influxHost = doc["influxHost"].as<String>();
+          if (doc["influxPort"].is<int>())
+            appConfig.influxPort = doc["influxPort"];
+          if (doc["pushStatsInterval"].is<int>())
+            appConfig.pushStatsInterval = doc["pushStatsInterval"];
+          if (doc["measurementName"].is<const char *>())
+            appConfig.measurementName = doc["measurementName"].as<String>();
+          if (doc["minSecondsNodeUpdates"].is<int>())
+            appConfig.minSecondsNodeUpdates = doc["minSecondsNodeUpdates"];
+          if (doc["minSecondsNodeTableUpdates"].is<int>())
+            appConfig.minSecondsNodeTableUpdates =
+                doc["minSecondsNodeTableUpdates"];
+          if (doc["otaUser"].is<const char *>()) {
+            String val = doc["otaUser"].as<String>();
+            if (val.length() > 0)
+              appConfig.otaUser = val;
+          }
+          if (doc["otaPass"].is<const char *>()) {
+            String val = doc["otaPass"].as<String>();
+            if (val.length() > 0)
+              appConfig.otaPass = val;
+          }
+          if (doc["mqttHost"].is<const char *>())
+            appConfig.mqttHost = doc["mqttHost"].as<String>();
+          if (doc["mqttPort"].is<int>())
+            appConfig.mqttPort = doc["mqttPort"];
+          if (doc["mqttUser"].is<const char *>())
+            appConfig.mqttUser = doc["mqttUser"].as<String>();
+          if (doc["mqttPass"].is<const char *>()) {
+            String val = doc["mqttPass"].as<String>();
+            if (val.length() > 0)
+              appConfig.mqttPass = val;
+          }
+          if (doc["mqttTopic"].is<const char *>()) {
+            String val = doc["mqttTopic"].as<String>();
+            val.trim();
+            while (val.endsWith("/"))
+              val.remove(val.length() - 1);
+            if (val.length() > 0)
+              appConfig.mqttTopic = val;
+          }
+          if (doc["mqttInterval"].is<int>())
+            appConfig.mqttInterval = max(1, doc["mqttInterval"].as<int>());
+          if (doc["mqttDiscovery"].is<bool>())
+            appConfig.mqttDiscovery = doc["mqttDiscovery"];
+          cfg = appConfig;
+        }
+
+        saveSettings(cfg);
+        applyMqttSettings(cfg);
+        request->send(200, "text/plain", "OK");
       });
 
   // Reboot endpoint
