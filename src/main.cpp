@@ -8,16 +8,21 @@
 #include <NetWizard.h>
 #include <WebSerial.h>
 
+#include <algorithm>
 #include <cstdlib>
 #include <limits>
 #include <map>
 #include <memory>
 #include <mutex>
+#include <new>
+#include <string>
 
 #include "Health.h"
 #include "RepoInfo.h"
+#include "MqttPublisher.h"
 #include "TaskLog.h"
 #include "PowerStatsAccumulator.h"
+#include "TigoMqtt.h"
 #include "TigoProtocol.h"
 #include "Version.h"
 #include <GithubReleaseOTA.h>
@@ -30,6 +35,8 @@ constexpr size_t kRxBufferSize = 1024;
 
 AsyncUDP udp;
 TigoParser parser;
+MqttPublisher mqtt;
+TigoMqttPublisher tigoMqtt;
 
 struct Config {
   String hostname = "TigoTell";
@@ -44,60 +51,103 @@ struct Config {
   int minSecondsNodeTableUpdates = 60;
   String otaUser = "...";
   String otaPass = "...";
+  String mqttHost = "";
+  uint16_t mqttPort = 1883;
+  String mqttUser = "";
+  String mqttPass = "";
+  String mqttTopic = "tigotell";
+  int mqttInterval = 30;
+  bool mqttDiscovery = true;
 };
 
 Config appConfig;
-Preferences preferences;
+std::mutex dataMutex;
 String fsVersion = "unknown";
 
 void loadSettings() {
-  preferences.begin("tigotell", true);
-  appConfig.hostname = preferences.getString("hostname", appConfig.hostname);
-  appConfig.txPin = preferences.getInt("txPin", appConfig.txPin);
-  appConfig.rxPin = preferences.getInt("rxPin", appConfig.rxPin);
-  appConfig.enPin = preferences.getInt("enPin", appConfig.enPin);
-  appConfig.influxHost =
-      preferences.getString("influxHost", appConfig.influxHost);
-  appConfig.influxPort =
-      preferences.getUShort("influxPort", appConfig.influxPort);
+  Preferences prefs;
+  prefs.begin("tigotell", true);
+  appConfig.hostname = prefs.getString("hostname", appConfig.hostname);
+  appConfig.txPin = prefs.getInt("txPin", appConfig.txPin);
+  appConfig.rxPin = prefs.getInt("rxPin", appConfig.rxPin);
+  appConfig.enPin = prefs.getInt("enPin", appConfig.enPin);
+  appConfig.influxHost = prefs.getString("influxHost", appConfig.influxHost);
+  appConfig.influxPort = prefs.getUShort("influxPort", appConfig.influxPort);
   appConfig.pushStatsInterval =
-      preferences.getInt("pushStats", appConfig.pushStatsInterval);
+      prefs.getInt("pushStats", appConfig.pushStatsInterval);
   appConfig.measurementName =
-      preferences.getString("measName", appConfig.measurementName);
+      prefs.getString("measName", appConfig.measurementName);
   appConfig.minSecondsNodeUpdates =
-      preferences.getInt("nodeUpd", appConfig.minSecondsNodeUpdates);
+      prefs.getInt("nodeUpd", appConfig.minSecondsNodeUpdates);
   appConfig.minSecondsNodeTableUpdates =
-      preferences.getInt("tableUpd", appConfig.minSecondsNodeTableUpdates);
-  appConfig.otaUser = preferences.getString("otaUser", appConfig.otaUser);
-  appConfig.otaPass = preferences.getString("otaPass", appConfig.otaPass);
-  preferences.end();
+      prefs.getInt("tableUpd", appConfig.minSecondsNodeTableUpdates);
+  appConfig.otaUser = prefs.getString("otaUser", appConfig.otaUser);
+  appConfig.otaPass = prefs.getString("otaPass", appConfig.otaPass);
+  appConfig.mqttHost = prefs.getString("mqttHost", appConfig.mqttHost);
+  appConfig.mqttPort = prefs.getUShort("mqttPort", appConfig.mqttPort);
+  appConfig.mqttUser = prefs.getString("mqttUser", appConfig.mqttUser);
+  appConfig.mqttPass = prefs.getString("mqttPass", appConfig.mqttPass);
+  appConfig.mqttTopic = prefs.getString("mqttTopic", appConfig.mqttTopic);
+  appConfig.mqttInterval = prefs.getInt("mqttIntv", appConfig.mqttInterval);
+  appConfig.mqttDiscovery =
+      prefs.getBool("mqttHaDisc", appConfig.mqttDiscovery);
+  prefs.end();
 }
 
-void saveSettings() {
-  preferences.begin("tigotell", false);
-  preferences.putString("hostname", appConfig.hostname);
-  preferences.putInt("txPin", appConfig.txPin);
-  preferences.putInt("rxPin", appConfig.rxPin);
-  preferences.putInt("enPin", appConfig.enPin);
-  preferences.putString("influxHost", appConfig.influxHost);
-  preferences.putUShort("influxPort", appConfig.influxPort);
-  preferences.putInt("pushStats", appConfig.pushStatsInterval);
-  preferences.putString("measName", appConfig.measurementName);
-  preferences.putInt("nodeUpd", appConfig.minSecondsNodeUpdates);
-  preferences.putInt("tableUpd", appConfig.minSecondsNodeTableUpdates);
-  preferences.putString("otaUser", appConfig.otaUser);
-  preferences.putString("otaPass", appConfig.otaPass);
-  preferences.end();
+void saveSettings(const Config &cfg) {
+  Preferences prefs;
+  prefs.begin("tigotell", false);
+  prefs.putString("hostname", cfg.hostname);
+  prefs.putInt("txPin", cfg.txPin);
+  prefs.putInt("rxPin", cfg.rxPin);
+  prefs.putInt("enPin", cfg.enPin);
+  prefs.putString("influxHost", cfg.influxHost);
+  prefs.putUShort("influxPort", cfg.influxPort);
+  prefs.putInt("pushStats", cfg.pushStatsInterval);
+  prefs.putString("measName", cfg.measurementName);
+  prefs.putInt("nodeUpd", cfg.minSecondsNodeUpdates);
+  prefs.putInt("tableUpd", cfg.minSecondsNodeTableUpdates);
+  prefs.putString("otaUser", cfg.otaUser);
+  prefs.putString("otaPass", cfg.otaPass);
+  prefs.putString("mqttHost", cfg.mqttHost);
+  prefs.putUShort("mqttPort", cfg.mqttPort);
+  prefs.putString("mqttUser", cfg.mqttUser);
+  prefs.putString("mqttPass", cfg.mqttPass);
+  prefs.putString("mqttTopic", cfg.mqttTopic);
+  prefs.putInt("mqttIntv", cfg.mqttInterval);
+  prefs.putBool("mqttHaDisc", cfg.mqttDiscovery);
+  prefs.end();
 }
 
 void sendUdpPayload(const std::string &payload) {
-  if (payload.empty() || WiFi.status() != WL_CONNECTED ||
-      appConfig.influxHost.length() == 0 || appConfig.influxPort == 0) {
+  if (payload.empty() || WiFi.status() != WL_CONNECTED)
     return;
+  String host;
+  uint16_t port;
+  {
+    std::lock_guard<std::mutex> lock(dataMutex);
+    host = appConfig.influxHost;
+    port = appConfig.influxPort;
   }
+  if (host.length() == 0 || port == 0)
+    return;
   udp.writeTo(reinterpret_cast<const uint8_t *>(payload.c_str()),
-              payload.length(), appConfig.influxHost.c_str(),
-              appConfig.influxPort);
+              payload.length(), host.c_str(), port);
+}
+
+void applyMqttSettings(const Config &cfg) {
+  MqttPublisher::Settings s;
+  s.host = cfg.mqttHost;
+  s.port = cfg.mqttPort;
+  s.user = cfg.mqttUser;
+  s.pass = cfg.mqttPass;
+  s.baseTopic = cfg.mqttTopic;
+  uint8_t mac[6];
+  WiFi.macAddress(mac);
+  char suffix[8];
+  snprintf(suffix, sizeof(suffix), "-%02x%02x%02x", mac[3], mac[4], mac[5]);
+  s.clientId = cfg.hostname + suffix;
+  mqtt.configure(s);
 }
 
 volatile bool isUpdatingOTA = false;
@@ -184,78 +234,11 @@ AsyncWebServer server(80);
 NetWizard netWizard(&server);
 
 unsigned long lastStatsTime = 0;
+unsigned long lastMqttTime = 0;
 
-// A TAP that sent nothing for this long counts as offline.
-constexpr uint64_t kTapOfflineMs = 60000;
-// Modules heard through a TAP within this window count as connected to it.
-constexpr uint64_t kTapModuleWindowMs = 300000;
-
-String tapHexId(uint16_t id) {
-  char buf[8];
-  snprintf(buf, sizeof(buf), "%04X", id);
-  return buf;
-}
-
-// "ok", "degraded" (answers fewer than 90 % of recent polls) or "offline".
-const char *tapState(const TigoGatewayStatus &gw, uint64_t now) {
-  uint64_t age = now >= gw.lastSeenMs ? now - gw.lastSeenMs : 0;
-  if (!gw.seen || age > kTapOfflineMs)
-    return "offline";
-  int pct = gw.recentAnsweredPercent();
-  return pct >= 0 && pct < 90 ? "degraded" : "ok";
-}
-
-void tapToJson(JsonObject o, const TigoGatewayStatus &gw, uint64_t now) {
-  o["id"] = tapHexId(gw.id);
-  o["state"] = tapState(gw, now);
-  if (gw.seen)
-    o["last_seen_s"] = (now >= gw.lastSeenMs ? now - gw.lastSeenMs : 0) / 1000;
-  o["polls"] = gw.polls;
-  o["answered"] = gw.answered;
-  o["missed"] = gw.missed;
-  int pct = gw.recentAnsweredPercent();
-  if (pct >= 0)
-    o["recent_answered_pct"] = pct;
-  if (gw.rxBuffersUsed >= 0) {
-    o["rx_buffers_used"] = gw.rxBuffersUsed;
-    o["rx_buffers_max"] = gw.rxBuffersMax;
-  }
-  if (gw.txBuffersFree >= 0) {
-    o["tx_buffers_free"] = gw.txBuffersFree;
-    if (gw.txBuffersMin >= 0)
-      o["tx_buffers_min"] = gw.txBuffersMin;
-  }
-  if (gw.slotCounter >= 0)
-    o["slot_counter"] = gw.slotCounter;
-  o["packets"] = gw.packets;
-  o["power_reports"] = gw.powerReports;
-  int modules = 0;
-  long rssiSum = 0;
-  int rssiMin = 999;
-  for (auto const &[node, seen] : gw.nodes) {
-    uint64_t age = now >= seen.lastMs ? now - seen.lastMs : 0;
-    if (age > kTapModuleWindowMs)
-      continue;
-    modules++;
-    rssiSum += seen.rssi;
-    rssiMin = std::min(rssiMin, seen.rssi);
-  }
-  o["modules"] = modules;
-  if (modules > 0) {
-    o["rssi_avg"] = static_cast<int>(rssiSum / modules);
-    o["rssi_min"] = rssiMin;
-  }
-  auto bc = parser.getGatewayBarcodes().find(gw.id);
-  if (bc != parser.getGatewayBarcodes().end())
-    o["barcode"] = bc->second.c_str();
-  if (!gw.version.empty())
-    o["version"] = gw.version.c_str();
-  if (gw.radioChannel >= 0)
-    o["radio_channel"] = gw.radioChannel;
-  if (gw.panId >= 0)
-    o["pan_id"] = tapHexId(gw.panId);
-}
-
+// Nodes without a power frame for this long are not published (matches the
+// dashboard's stale threshold).
+constexpr uint64_t kMqttStaleMs = 60000;
 
 // Store the latest power frame and timestamp for each node
 struct PowerNodeData {
@@ -337,10 +320,52 @@ std::map<uint16_t, unsigned long> lastUpdateTimes;
 // Store the last update time for each announced address
 std::map<uint16_t, unsigned long> lastUpdateTimesAnnounce;
 
-std::mutex dataMutex;
-
 std::map<uint16_t, PowerStatsAccumulator> nodeAccumulators;
 bool isElegantOtaStarted = false;
+
+void publishMqtt() {
+  MqttPublishSnapshot snap;
+  {
+    std::lock_guard<std::mutex> lock(dataMutex);
+    snap.cfg.discovery = appConfig.mqttDiscovery;
+    snap.cfg.topic = appConfig.mqttTopic.c_str();
+    snap.cfg.interval = appConfig.mqttInterval;
+    snap.cfg.hostname = appConfig.hostname.c_str();
+    snap.nowMs = static_cast<uint64_t>(esp_timer_get_time() / 1000);
+    snap.nodes.reserve(nodePowerData.size());
+    for (auto const &[key, val] : nodePowerData) {
+      uint64_t ageMs = snap.nowMs >= val.last_updated
+                           ? snap.nowMs - val.last_updated
+                           : 0;
+      if (ageMs > kMqttStaleMs)
+        continue;
+      const auto &frame = val.frame;
+      auto info = persistentNodeTable.find(frame->pv_node_id);
+      std::string barcode =
+          info != persistentNodeTable.end() ? info->second.barcode : "";
+      snap.nodes.push_back({frame->pv_node_id, frame->address,
+                            std::move(barcode), frame->voltage_in,
+                            frame->voltage_out, frame->current_in,
+                            frame->temperature, frame->duty_cycle,
+                            frame->rssi, ageMs / 1000});
+    }
+    snap.knownNodes = persistentNodeTable.size();
+    snap.stats = parser.getStatistics();
+    const auto &barcodes = parser.getGatewayBarcodes();
+    for (auto const &[id, gw] : parser.getGateways()) {
+      if (!gw.seen && gw.polls == 0)
+        continue;
+      auto bc = barcodes.find(id);
+      std::string barcode = bc != barcodes.end() ? bc->second : "";
+      snap.taps.push_back({id, gw, std::move(barcode)});
+    }
+  }
+  snap.cfg.swVersion = VERSION;
+  snap.cfg.repoUrl = TIGOTELL_REPO_URL;
+  snap.cfg.localIp = WiFi.localIP().toString().c_str();
+
+  tigoMqtt.publish(snap, mqtt.sink());
+}
 
 void setup() {
   health::begin();
@@ -385,6 +410,17 @@ void setup() {
   // Setup WebSerial
   WebSerial.begin(&server);
 
+  // MQTT (runs in its own task)
+  {
+    uint8_t mac[6];
+    WiFi.macAddress(mac);
+    char id[24];
+    snprintf(id, sizeof(id), "tigotell_%02x%02x%02x", mac[3], mac[4], mac[5]);
+    tigoMqtt.setDeviceId(id);
+  }
+  mqtt.begin();
+  applyMqttSettings(appConfig);
+
   // JSON Dump endpoint
   server.on("/json", HTTP_GET, [](AsyncWebServerRequest *request) {
     JsonDocument doc;
@@ -415,6 +451,11 @@ void setup() {
       if (nvs_get_stats(NULL, &nvsStats) == ESP_OK)
         jsonSys["nvs_free_entries"] = nvsStats.available_entries;
 
+      JsonObject jsonMqtt = root["mqtt"].to<JsonObject>();
+      jsonMqtt["enabled"] = mqtt.isEnabled();
+      jsonMqtt["connected"] = mqtt.isConnected();
+      jsonMqtt["published"] = mqtt.publishedCount();
+
       // Power Data (Latest Metrics)
       JsonArray powerNodes = root["power"].to<JsonArray>();
       for (auto const &[key, val] : nodePowerData) {
@@ -429,16 +470,20 @@ void setup() {
         node["duty_cycle"] = frame->duty_cycle;
         node["rssi"] = frame->rssi;
         if (frame->gateway_id)
-          node["gateway"] = tapHexId(frame->gateway_id);
+          node["gateway"] = tapHexId(frame->gateway_id).c_str();
         node["last_updated"] = val.last_updated;
       }
 
       // TAPs (gateways) as seen on the bus
       JsonArray taps = root["taps"].to<JsonArray>();
       uint64_t nowMs = static_cast<uint64_t>(esp_timer_get_time() / 1000);
+      const auto &barcodes = parser.getGatewayBarcodes();
       for (auto const &[id, gw] : parser.getGateways()) {
-        if (gw.seen || gw.polls > 0)
-          tapToJson(taps.add<JsonObject>(), gw, nowMs);
+        if (gw.seen || gw.polls > 0) {
+          auto bc = barcodes.find(id);
+          tapToJson(taps.add<JsonObject>(), gw, nowMs,
+                    bc != barcodes.end() ? &bc->second : nullptr);
+        }
       }
 
       // Discovery Data (Persistent Map)
@@ -469,17 +514,29 @@ void setup() {
 
   // Config GET endpoint
   server.on("/api/config", HTTP_GET, [](AsyncWebServerRequest *request) {
+    Config cfg;
+    {
+      std::lock_guard<std::mutex> lock(dataMutex);
+      cfg = appConfig;
+    }
+
     JsonDocument doc;
-    doc["hostname"] = appConfig.hostname;
-    doc["txPin"] = appConfig.txPin;
-    doc["rxPin"] = appConfig.rxPin;
-    doc["enPin"] = appConfig.enPin;
-    doc["influxHost"] = appConfig.influxHost;
-    doc["influxPort"] = appConfig.influxPort;
-    doc["pushStatsInterval"] = appConfig.pushStatsInterval;
-    doc["measurementName"] = appConfig.measurementName;
-    doc["minSecondsNodeUpdates"] = appConfig.minSecondsNodeUpdates;
-    doc["minSecondsNodeTableUpdates"] = appConfig.minSecondsNodeTableUpdates;
+    doc["hostname"] = cfg.hostname;
+    doc["txPin"] = cfg.txPin;
+    doc["rxPin"] = cfg.rxPin;
+    doc["enPin"] = cfg.enPin;
+    doc["influxHost"] = cfg.influxHost;
+    doc["influxPort"] = cfg.influxPort;
+    doc["pushStatsInterval"] = cfg.pushStatsInterval;
+    doc["measurementName"] = cfg.measurementName;
+    doc["minSecondsNodeUpdates"] = cfg.minSecondsNodeUpdates;
+    doc["minSecondsNodeTableUpdates"] = cfg.minSecondsNodeTableUpdates;
+    doc["mqttHost"] = cfg.mqttHost;
+    doc["mqttPort"] = cfg.mqttPort;
+    doc["mqttUser"] = cfg.mqttUser;
+    doc["mqttTopic"] = cfg.mqttTopic;
+    doc["mqttInterval"] = cfg.mqttInterval;
+    doc["mqttDiscovery"] = cfg.mqttDiscovery;
     doc["otaEnabled"] = isElegantOtaStarted;
 
     AsyncResponseStream *response =
@@ -489,13 +546,72 @@ void setup() {
   });
 
   // Config POST endpoint
+  constexpr size_t kConfigMaxBytes = 4096;
+  struct ConfigUpload {
+    std::string body;
+    int errorStatus = 0; // 0 = ok, else 400 / 413
+  };
   server.on(
-      "/api/config", HTTP_POST, [](AsyncWebServerRequest *request) {}, NULL,
-      [](AsyncWebServerRequest *request, uint8_t *data, size_t len,
-         size_t index, size_t total) {
+      "/api/config", HTTP_POST,
+      [](AsyncWebServerRequest *request) {
+        std::unique_ptr<ConfigUpload> upload(
+            static_cast<ConfigUpload *>(request->_tempObject));
+        request->_tempObject = nullptr;
+
+        if (!upload) {
+          bool nonJson = request->multipart() ||
+                         request->contentType().startsWith(
+                             "application/x-www-form-urlencoded") ||
+                         request->params() > 0;
+          if (nonJson) {
+            request->send(400, "text/plain",
+                          "Expected application/json body");
+          } else if (request->contentLength() == 0) {
+            request->send(400, "text/plain", "Empty body");
+          } else {
+            request->send(503, "text/plain", "Out of memory");
+          }
+          return;
+        }
+        if (upload->errorStatus == 413) {
+          request->send(413, "text/plain", "Payload too large");
+          return;
+        }
+        if (upload->errorStatus != 0) {
+          request->send(400, "text/plain", "Invalid body size");
+          return;
+        }
+        if (upload->body.empty()) {
+          request->send(400, "text/plain", "Empty body");
+          return;
+        }
+        if (request->contentLength() > 0 &&
+            upload->body.size() != request->contentLength()) {
+          request->send(400, "text/plain", "Incomplete body");
+          return;
+        }
+
         JsonDocument doc;
-        DeserializationError error = deserializeJson(doc, data, len);
-        if (!error) {
+        DeserializationError error =
+            deserializeJson(doc, upload->body.data(), upload->body.size());
+        upload.reset();
+
+        if (error) {
+          if (error == DeserializationError::NoMemory) {
+            request->send(503, "text/plain", "Out of memory");
+          } else {
+            request->send(400, "text/plain", "Invalid JSON");
+          }
+          return;
+        }
+        if (!doc.is<JsonObject>()) {
+          request->send(400, "text/plain", "Expected JSON object");
+          return;
+        }
+
+        Config cfg;
+        {
+          std::lock_guard<std::mutex> lock(dataMutex);
           if (doc["hostname"].is<const char *>())
             appConfig.hostname = doc["hostname"].as<String>();
           if (doc["txPin"].is<int>())
@@ -506,8 +622,11 @@ void setup() {
             appConfig.enPin = doc["enPin"];
           if (doc["influxHost"].is<const char *>())
             appConfig.influxHost = doc["influxHost"].as<String>();
-          if (doc["influxPort"].is<int>())
-            appConfig.influxPort = doc["influxPort"];
+          if (doc["influxPort"].is<int>()) {
+            int port = doc["influxPort"];
+            if (port >= 0 && port <= 65535)
+              appConfig.influxPort = static_cast<uint16_t>(port);
+          }
           if (doc["pushStatsInterval"].is<int>())
             appConfig.pushStatsInterval = doc["pushStatsInterval"];
           if (doc["measurementName"].is<const char *>())
@@ -527,12 +646,73 @@ void setup() {
             if (val.length() > 0)
               appConfig.otaPass = val;
           }
-
-          saveSettings();
-          request->send(200, "text/plain", "OK");
-        } else {
-          request->send(400, "text/plain", "Invalid JSON");
+          if (doc["mqttHost"].is<const char *>())
+            appConfig.mqttHost = doc["mqttHost"].as<String>();
+          if (doc["mqttPort"].is<int>()) {
+            int port = doc["mqttPort"];
+            if (port >= 0 && port <= 65535)
+              appConfig.mqttPort = static_cast<uint16_t>(port);
+          }
+          if (doc["mqttUser"].is<const char *>())
+            appConfig.mqttUser = doc["mqttUser"].as<String>();
+          if (doc["mqttPass"].is<const char *>()) {
+            String val = doc["mqttPass"].as<String>();
+            if (val.length() > 0)
+              appConfig.mqttPass = val;
+          }
+          if (doc["mqttTopic"].is<const char *>()) {
+            String val = doc["mqttTopic"].as<String>();
+            val.trim();
+            while (val.endsWith("/"))
+              val.remove(val.length() - 1);
+            if (val.length() > 0)
+              appConfig.mqttTopic = val;
+          }
+          if (doc["mqttInterval"].is<int>())
+            appConfig.mqttInterval =
+                std::clamp(doc["mqttInterval"].as<int>(), 1, 3600);
+          if (doc["mqttDiscovery"].is<bool>())
+            appConfig.mqttDiscovery = doc["mqttDiscovery"];
+          cfg = appConfig;
         }
+
+        saveSettings(cfg);
+        applyMqttSettings(cfg);
+        request->send(200, "text/plain", "OK");
+      },
+      NULL,
+      [](AsyncWebServerRequest *request, uint8_t *data, size_t len,
+         size_t index, size_t total) {
+        if (index == 0 && !request->_tempObject) {
+          auto *upload = new (std::nothrow) ConfigUpload{};
+          if (!upload)
+            return;
+          if (total > kConfigMaxBytes) {
+            upload->errorStatus = 413;
+          } else if (total > 0) {
+            upload->body.reserve(total);
+          }
+          request->_tempObject = upload;
+          request->onDisconnect([request]() {
+            delete static_cast<ConfigUpload *>(request->_tempObject);
+            request->_tempObject = nullptr;
+          });
+        }
+
+        auto *upload = static_cast<ConfigUpload *>(request->_tempObject);
+        if (!upload || upload->errorStatus != 0)
+          return;
+
+        if (index != upload->body.size() ||
+            len > kConfigMaxBytes - upload->body.size() ||
+            (total > 0 && (len > total || index > total - len))) {
+          upload->errorStatus =
+              (len > kConfigMaxBytes - upload->body.size()) ? 413 : 400;
+          upload->body.clear();
+          return;
+        }
+        if (len > 0)
+          upload->body.append(reinterpret_cast<const char *>(data), len);
       });
 
   // Reboot endpoint
@@ -670,7 +850,16 @@ void loop() {
   }
 
   // Process parsed frames
+  bool hasFrameCfg = false;
+  int minNodeUpdates = 0;
+  String measName;
   while (parser.hasFrames()) {
+    if (!hasFrameCfg) {
+      std::lock_guard<std::mutex> lock(dataMutex);
+      minNodeUpdates = appConfig.minSecondsNodeUpdates;
+      measName = appConfig.measurementName;
+      hasFrameCfg = true;
+    }
     std::unique_ptr<TigoFrame> frame = parser.popFrame();
 
     switch (frame->getType()) {
@@ -688,8 +877,7 @@ void loop() {
           shouldSend = true;
         } else {
           if (currentTime - lastUpdateTimes[powerFrame->pv_node_id] >
-              static_cast<unsigned long>(appConfig.minSecondsNodeUpdates) *
-                  1000) {
+              static_cast<unsigned long>(minNodeUpdates) * 1000) {
             shouldSend = true;
           }
         }
@@ -698,7 +886,7 @@ void loop() {
           if (nodeAccumulators[powerFrame->pv_node_id].hasSamples()) {
             std::string lineProtocol =
                 nodeAccumulators[powerFrame->pv_node_id].toInfluxLineProtocol(
-                    appConfig.measurementName.c_str(), powerFrame->address,
+                    measName.c_str(), powerFrame->address,
                     powerFrame->pv_node_id);
 
             // Send over UDP
@@ -735,15 +923,14 @@ void loop() {
           shouldSend = true;
         } else {
           if (currentTime - lastUpdateTimesAnnounce[announceFrame->pv_node_id] >
-              static_cast<unsigned long>(appConfig.minSecondsNodeUpdates) *
-                  1000) {
+              static_cast<unsigned long>(minNodeUpdates) * 1000) {
             shouldSend = true;
           }
         }
 
         if (shouldSend && WiFi.status() == WL_CONNECTED) {
-          std::string lineProtocol = announceFrame->toInfluxLineProtocol(
-              appConfig.measurementName.c_str());
+          std::string lineProtocol =
+              announceFrame->toInfluxLineProtocol(measName.c_str());
 
           // Send over UDP
           sendUdpPayload(lineProtocol);
@@ -771,11 +958,9 @@ void loop() {
       TigoNodeTableFrame *nodeTableFrame =
           static_cast<TigoNodeTableFrame *>(frame.get());
       if (nodeTableFrame) {
-        unsigned long currentTime = millis();
-
         if (WiFi.status() == WL_CONNECTED) {
-          std::string lineProtocol = nodeTableFrame->toInfluxLineProtocol(
-              appConfig.measurementName.c_str());
+          std::string lineProtocol =
+              nodeTableFrame->toInfluxLineProtocol(measName.c_str());
 
           // Send over UDP
           sendUdpPayload(lineProtocol);
@@ -810,13 +995,26 @@ void loop() {
     }
   }
 
+  int pushStatsInterval;
+  int mqttInterval;
+  {
+    std::lock_guard<std::mutex> lock(dataMutex);
+    pushStatsInterval = appConfig.pushStatsInterval;
+    mqttInterval = appConfig.mqttInterval;
+  }
+
   // Send Statistics periodically
   if (millis() - lastStatsTime >
-          static_cast<unsigned long>(appConfig.pushStatsInterval) * 1000 &&
+          static_cast<unsigned long>(pushStatsInterval) * 1000 &&
       WiFi.status() == WL_CONNECTED) {
     lastStatsTime = millis();
-    std::string statsLine = parser.getStatisticsInfluxLineProtocol(
-        appConfig.measurementName.c_str());
+    String measName;
+    {
+      std::lock_guard<std::mutex> lock(dataMutex);
+      measName = appConfig.measurementName;
+    }
+    std::string statsLine =
+        parser.getStatisticsInfluxLineProtocol(measName.c_str());
     statsLine +=
         ",uptime=" + std::to_string(esp_timer_get_time() / 1000000) + "i";
 
@@ -824,5 +1022,13 @@ void loop() {
 
     WebSerial.print("Sent Stats: ");
     WebSerial.println(statsLine.c_str());
+  }
+
+  // Publish data points to MQTT periodically
+  if (mqtt.isConnected() &&
+      millis() - lastMqttTime >
+          static_cast<unsigned long>(mqttInterval) * 1000) {
+    lastMqttTime = millis();
+    publishMqtt();
   }
 }
