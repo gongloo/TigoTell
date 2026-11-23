@@ -1838,7 +1838,7 @@ async function saveLayout() {
     const { res, body: errText } = await fetchWithTimeout('/api/layout', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: json }, 20000);
     const max = parseInt(res.headers.get('X-Layout-Max'));
     if (max >= 0) state.maxBytes = max;
-    if (!res.ok) throw new Error(errText);
+    if (!res.ok) throw new Error(errText || `HTTP ${res.status}`);
     // Read it back, so "saved" means it really is on the device.
     const { res: check, body: checkText } = await fetchWithTimeout('/api/layout', { cache: 'no-store' }, 8000);
     if (!check.ok || checkText !== json) throw new Error('the device returned a different layout when checked');
