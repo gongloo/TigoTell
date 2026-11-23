@@ -380,13 +380,29 @@ String loadLayout() {
 }
 
 // Remove first: NVS would otherwise need room for old and new blob at once.
+// Back up any existing layout in RAM first so a failed write can restore it.
 // Only called after layoutCapacity() confirmed the new blob fits.
 bool saveLayout(const uint8_t *data, size_t len) {
   Preferences prefs;
   if (!prefs.begin("tigolayout", false))
     return false;
+  size_t oldLen = prefs.getBytesLength("layout");
+  std::unique_ptr<uint8_t[]> backup;
+  if (oldLen > 0 && oldLen <= kLayoutMaxBytes) {
+    backup.reset(new (std::nothrow) uint8_t[oldLen]);
+    if (!backup || prefs.getBytes("layout", backup.get(), oldLen) != oldLen) {
+      prefs.end();
+      return false;
+    }
+  }
   prefs.remove("layout");
   bool ok = prefs.putBytes("layout", data, len) == len;
+  if (!ok && backup) {
+    bool restored = prefs.putBytes("layout", backup.get(), oldLen) == oldLen;
+    taskLog.printf("Layout: save failed; backup restore %s (%u bytes)\n",
+                   restored ? "succeeded" : "FAILED",
+                   static_cast<unsigned>(oldLen));
+  }
   prefs.end();
   return ok;
 }
