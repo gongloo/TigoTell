@@ -600,7 +600,12 @@ void publishMqtt() {
     }
   }
 
-  if (cfg.discovery) {
+  if (!cfg.discovery) {
+    lastDiscoveryGen = 0;
+    discoveredDevice = false;
+    discoveredNodes.clear();
+    discoveredTaps.clear();
+  } else {
     uint32_t gen = mqtt.discoveryGeneration();
     if (gen != lastDiscoveryGen) {
       lastDiscoveryGen = gen;
@@ -610,14 +615,7 @@ void publishMqtt() {
     }
     if (!discoveredDevice && publishHaSystemDiscovery(cfg))
       discoveredDevice = true;
-  }
-
-  float totalPower = 0;
-  for (const auto &n : nodes) {
-    float power = n.voltage_out * n.current_in;
-    totalPower += power;
-
-    if (cfg.discovery) {
+    for (const auto &n : nodes) {
       auto known = discoveredNodes.find(n.pv_node_id);
       if (known == discoveredNodes.end() ||
           (!known->second && !n.barcode.empty())) {
@@ -625,6 +623,20 @@ void publishMqtt() {
           discoveredNodes[n.pv_node_id] = !n.barcode.empty();
       }
     }
+    for (const auto &tap : taps) {
+      bool hasBarcode = !tap.barcode.empty();
+      auto known = discoveredTaps.find(tap.id);
+      if (known == discoveredTaps.end() || (!known->second && hasBarcode)) {
+        if (publishHaTapDiscovery(tap.id, tap.barcode, cfg))
+          discoveredTaps[tap.id] = hasBarcode;
+      }
+    }
+  }
+
+  float totalPower = 0;
+  for (const auto &n : nodes) {
+    float power = n.voltage_out * n.current_in;
+    totalPower += power;
 
     JsonDocument doc;
     doc["pv_node_id"] = n.pv_node_id;
@@ -662,14 +674,6 @@ void publishMqtt() {
   mqtt.enqueue("stats", payload);
 
   for (const auto &tap : taps) {
-    if (cfg.discovery) {
-      bool hasBarcode = !tap.barcode.empty();
-      auto known = discoveredTaps.find(tap.id);
-      if (known == discoveredTaps.end() || (!known->second && hasBarcode)) {
-        if (publishHaTapDiscovery(tap.id, tap.barcode, cfg))
-          discoveredTaps[tap.id] = hasBarcode;
-      }
-    }
     JsonDocument tapDoc;
     tapToJson(tapDoc.to<JsonObject>(), tap.gw, now, &tap.barcode);
     String tapPayload;
