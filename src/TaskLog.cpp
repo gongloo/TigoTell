@@ -14,6 +14,7 @@ void TaskLog::println(const char *line) {
   if (lines.size() >= kMaxLines)
     lines.pop_front();
   lines.push_back(std::move(s));
+  hasPending.store(true, std::memory_order_release);
 }
 
 void TaskLog::printf(const char *fmt, ...) {
@@ -26,11 +27,25 @@ void TaskLog::printf(const char *fmt, ...) {
 }
 
 void TaskLog::flush() {
-  std::deque<String> pending;
-  {
-    std::lock_guard<std::mutex> lock(mutex);
-    pending.swap(lines);
-  }
-  for (const String &line : pending)
+  if (!hasPending.load(std::memory_order_acquire))
+    return;
+  for (size_t i = 0; i < kMaxLines; ++i) {
+    String line;
+    bool more = false;
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      if (lines.empty()) {
+        hasPending.store(false, std::memory_order_release);
+        return;
+      }
+      line = std::move(lines.front());
+      lines.pop_front();
+      more = !lines.empty();
+      if (!more)
+        hasPending.store(false, std::memory_order_release);
+    }
     WebSerial.println(line);
+    if (!more)
+      return;
+  }
 }

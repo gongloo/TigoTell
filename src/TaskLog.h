@@ -3,6 +3,7 @@
 
 #include <Arduino.h>
 
+#include <atomic>
 #include <deque>
 #include <mutex>
 
@@ -23,6 +24,7 @@ private:
   static constexpr size_t kMaxLines = 40;
   std::mutex mutex;
   std::deque<String> lines;
+  std::atomic<bool> hasPending{false};
 };
 
 extern TaskLog taskLog;
