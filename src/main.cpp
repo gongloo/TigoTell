@@ -873,9 +873,18 @@ void setup() {
         request->_tempObject = nullptr;
 
         if (!upload) {
-          bool hasBody = request->contentLength() > 0;
-          request->send(hasBody ? 503 : 400, "text/plain",
-                        hasBody ? "Out of memory" : "Empty body");
+          bool nonJson = request->isMultipart() ||
+                         request->contentType().startsWith(
+                             "application/x-www-form-urlencoded") ||
+                         request->params() > 0;
+          if (nonJson) {
+            request->send(400, "text/plain",
+                          "Expected application/json body");
+          } else if (request->contentLength() == 0) {
+            request->send(400, "text/plain", "Empty body");
+          } else {
+            request->send(503, "text/plain", "Out of memory");
+          }
           return;
         }
         if (upload->errorStatus == 413) {
