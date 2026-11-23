@@ -266,7 +266,8 @@ const char *tapState(const TigoGatewayStatus &gw, uint64_t now) {
   return pct >= 0 && pct < 90 ? "degraded" : "ok";
 }
 
-void tapToJson(JsonObject o, const TigoGatewayStatus &gw, uint64_t now) {
+void tapToJson(JsonObject o, const TigoGatewayStatus &gw, uint64_t now,
+               const std::string *barcode = nullptr) {
   o["id"] = tapHexId(gw.id);
   o["state"] = tapState(gw, now);
   if (gw.seen)
@@ -306,9 +307,8 @@ void tapToJson(JsonObject o, const TigoGatewayStatus &gw, uint64_t now) {
     o["rssi_avg"] = static_cast<int>(rssiSum / modules);
     o["rssi_min"] = rssiMin;
   }
-  auto bc = parser.getGatewayBarcodes().find(gw.id);
-  if (bc != parser.getGatewayBarcodes().end())
-    o["barcode"] = bc->second.c_str();
+  if (barcode && !barcode->empty())
+    o["barcode"] = barcode->c_str();
   if (!gw.version.empty())
     o["version"] = gw.version.c_str();
   if (gw.radioChannel >= 0)
@@ -420,17 +420,25 @@ void addHaSensor(JsonObject cmps, const String &uidBase, const char *key,
     c["ent_cat"] = "diagnostic";
 }
 
+struct MqttConfigSnapshot {
+  bool discovery;
+  String topic;
+  int interval;
+  String hostname;
+};
+
 // Fills the parts shared by all discovery messages and sends it retained.
 bool sendHaDiscovery(JsonDocument &doc, const String &objectId,
-                     const String &stateSubTopic) {
+                     const String &stateSubTopic,
+                     const MqttConfigSnapshot &cfg) {
   JsonObject origin = doc["o"].to<JsonObject>();
   origin["name"] = "TigoTell";
   origin["sw"] = VERSION;
   origin["url"] = TIGOTELL_REPO_URL;
-  doc["stat_t"] = appConfig.mqttTopic + "/" + stateSubTopic;
-  doc["avty_t"] = appConfig.mqttTopic + "/status";
+  doc["stat_t"] = cfg.topic + "/" + stateSubTopic;
+  doc["avty_t"] = cfg.topic + "/status";
   // Values without update for this long show as unavailable in HA.
-  doc["exp_aft"] = 3 * appConfig.mqttInterval + 60;
+  doc["exp_aft"] = 3 * cfg.interval + 60;
 
   String payload;
   serializeJson(doc, payload);
@@ -438,11 +446,11 @@ bool sendHaDiscovery(JsonDocument &doc, const String &objectId,
                               payload, true);
 }
 
-bool publishHaSystemDiscovery() {
+bool publishHaSystemDiscovery(const MqttConfigSnapshot &cfg) {
   JsonDocument doc;
   JsonObject dev = doc["dev"].to<JsonObject>();
   dev["ids"] = haDeviceId;
-  dev["name"] = appConfig.hostname;
+  dev["name"] = cfg.hostname;
   dev["mdl"] = "TigoTell";
   dev["sw"] = VERSION;
   dev["cu"] = "http://" + WiFi.localIP().toString() + "/";
@@ -461,10 +469,11 @@ bool publishHaSystemDiscovery() {
   addHaSensor(cmps, haDeviceId, "uptime_s", "Uptime", "duration", "s",
               nullptr, true);
 
-  return sendHaDiscovery(doc, haDeviceId, "stats");
+  return sendHaDiscovery(doc, haDeviceId, "stats", cfg);
 }
 
-bool publishHaNodeDiscovery(uint16_t nodeId, const std::string &barcode) {
+bool publishHaNodeDiscovery(uint16_t nodeId, const std::string &barcode,
+                            const MqttConfigSnapshot &cfg) {
   String uidBase = haDeviceId + "_node_" + String(nodeId);
   JsonDocument doc;
   JsonObject dev = doc["dev"].to<JsonObject>();
@@ -492,10 +501,11 @@ bool publishHaNodeDiscovery(uint16_t nodeId, const std::string &barcode) {
   addHaSensor(cmps, uidBase, "rssi", "RSSI", "signal_strength", "dBm",
               "measurement", true);
 
-  return sendHaDiscovery(doc, uidBase, "node/" + String(nodeId));
+  return sendHaDiscovery(doc, uidBase, "node/" + String(nodeId), cfg);
 }
 
-bool publishHaTapDiscovery(uint16_t id) {
+bool publishHaTapDiscovery(uint16_t id, const std::string &barcode,
+                           const MqttConfigSnapshot &cfg) {
   String hex = tapHexId(id);
   String uidBase = haDeviceId + "_tap_" + hex;
   JsonDocument doc;
@@ -504,9 +514,8 @@ bool publishHaTapDiscovery(uint16_t id) {
   dev["name"] = "Tigo TAP " + hex;
   dev["mf"] = "Tigo";
   dev["mdl"] = "TAP (Access Point)";
-  auto bc = parser.getGatewayBarcodes().find(id);
-  if (bc != parser.getGatewayBarcodes().end())
-    dev["sn"] = bc->second.c_str();
+  if (!barcode.empty())
+    dev["sn"] = barcode.c_str();
   dev["via_device"] = haDeviceId;
 
   JsonObject cmps = doc["cmps"].to<JsonObject>();
@@ -529,15 +538,67 @@ bool publishHaTapDiscovery(uint16_t id) {
   addHaSensor(cmps, uidBase, "missed", "Missed polls", nullptr, nullptr,
               "total_increasing", true);
 
-  return sendHaDiscovery(doc, uidBase, "tap/" + hex);
+  return sendHaDiscovery(doc, uidBase, "tap/" + hex, cfg);
 }
 
 void publishMqtt() {
-  std::lock_guard<std::mutex> lock(dataMutex);
-  uint64_t now = esp_timer_get_time() / 1000;
+  struct NodeSnapshot {
+    uint16_t pv_node_id;
+    uint16_t address;
+    std::string barcode;
+    float voltage_in;
+    float voltage_out;
+    float current_in;
+    float temperature;
+    uint8_t duty_cycle;
+    int rssi;
+    uint64_t age_s;
+  };
+  struct TapSnapshot {
+    uint16_t id;
+    TigoGatewayStatus gw;
+    std::string barcode;
+  };
 
-  bool discovery = appConfig.mqttDiscovery;
-  if (discovery) {
+  MqttConfigSnapshot cfg;
+  uint64_t now;
+  std::vector<NodeSnapshot> nodes;
+  size_t knownNodes;
+  TigoParser::Statistics stats;
+  std::vector<TapSnapshot> taps;
+
+  {
+    std::lock_guard<std::mutex> lock(dataMutex);
+    cfg = {appConfig.mqttDiscovery, appConfig.mqttTopic,
+           appConfig.mqttInterval, appConfig.hostname};
+    now = static_cast<uint64_t>(esp_timer_get_time() / 1000);
+    nodes.reserve(nodePowerData.size());
+    for (auto const &[key, val] : nodePowerData) {
+      uint64_t ageMs = now >= val.last_updated ? now - val.last_updated : 0;
+      if (ageMs > kMqttStaleMs)
+        continue;
+      const auto &frame = val.frame;
+      auto info = persistentNodeTable.find(frame->pv_node_id);
+      std::string barcode =
+          info != persistentNodeTable.end() ? info->second.barcode : "";
+      nodes.push_back({frame->pv_node_id, frame->address, std::move(barcode),
+                       frame->voltage_in, frame->voltage_out,
+                       frame->current_in, frame->temperature,
+                       frame->duty_cycle, frame->rssi, ageMs / 1000});
+    }
+    knownNodes = persistentNodeTable.size();
+    stats = parser.getStatistics();
+    const auto &barcodes = parser.getGatewayBarcodes();
+    for (auto const &[id, gw] : parser.getGateways()) {
+      if (!gw.seen && gw.polls == 0)
+        continue;
+      auto bc = barcodes.find(id);
+      std::string barcode = bc != barcodes.end() ? bc->second : "";
+      taps.push_back({id, gw, std::move(barcode)});
+    }
+  }
+
+  if (cfg.discovery) {
     uint32_t gen = mqtt.discoveryGeneration();
     if (gen != lastDiscoveryGen) {
       lastDiscoveryGen = gen;
@@ -545,57 +606,47 @@ void publishMqtt() {
       discoveredNodes.clear();
       discoveredTaps.clear();
     }
-    if (!discoveredDevice && publishHaSystemDiscovery())
+    if (!discoveredDevice && publishHaSystemDiscovery(cfg))
       discoveredDevice = true;
   }
+
   float totalPower = 0;
-  int activeNodes = 0;
-
-  for (auto const &[key, val] : nodePowerData) {
-    if (now - val.last_updated > kMqttStaleMs)
-      continue;
-    const auto &frame = val.frame;
-    float power = frame->voltage_out * frame->current_in;
+  for (const auto &n : nodes) {
+    float power = n.voltage_out * n.current_in;
     totalPower += power;
-    activeNodes++;
 
-    JsonDocument doc;
-    doc["pv_node_id"] = frame->pv_node_id;
-    doc["address"] = frame->address;
-    auto info = persistentNodeTable.find(frame->pv_node_id);
-    std::string barcode;
-    if (info != persistentNodeTable.end())
-      barcode = info->second.barcode;
-    if (!barcode.empty())
-      doc["barcode"] = barcode.c_str();
-
-    if (discovery) {
-      auto known = discoveredNodes.find(frame->pv_node_id);
+    if (cfg.discovery) {
+      auto known = discoveredNodes.find(n.pv_node_id);
       if (known == discoveredNodes.end() ||
-          (!known->second && !barcode.empty())) {
-        if (publishHaNodeDiscovery(frame->pv_node_id, barcode))
-          discoveredNodes[frame->pv_node_id] = !barcode.empty();
+          (!known->second && !n.barcode.empty())) {
+        if (publishHaNodeDiscovery(n.pv_node_id, n.barcode, cfg))
+          discoveredNodes[n.pv_node_id] = !n.barcode.empty();
       }
     }
+
+    JsonDocument doc;
+    doc["pv_node_id"] = n.pv_node_id;
+    doc["address"] = n.address;
+    if (!n.barcode.empty())
+      doc["barcode"] = n.barcode.c_str();
     doc["power"] = power;
-    doc["voltage_in"] = frame->voltage_in;
-    doc["voltage_out"] = frame->voltage_out;
-    doc["current_in"] = frame->current_in;
-    doc["temperature"] = frame->temperature;
-    doc["duty_cycle"] = frame->duty_cycle;
-    doc["rssi"] = frame->rssi;
-    doc["age_s"] = (now - val.last_updated) / 1000;
+    doc["voltage_in"] = n.voltage_in;
+    doc["voltage_out"] = n.voltage_out;
+    doc["current_in"] = n.current_in;
+    doc["temperature"] = n.temperature;
+    doc["duty_cycle"] = n.duty_cycle;
+    doc["rssi"] = n.rssi;
+    doc["age_s"] = n.age_s;
 
     String payload;
     serializeJson(doc, payload);
-    mqtt.enqueue("node/" + String(frame->pv_node_id), payload);
+    mqtt.enqueue("node/" + String(n.pv_node_id), payload);
   }
 
-  const auto &stats = parser.getStatistics();
   JsonDocument doc;
   doc["total_power"] = totalPower;
-  doc["active_nodes"] = activeNodes;
-  doc["known_nodes"] = persistentNodeTable.size();
+  doc["active_nodes"] = nodes.size();
+  doc["known_nodes"] = knownNodes;
   doc["total_frames"] = stats.totalPhysicalFrames;
   doc["crc_errors"] = stats.crcErrors;
   doc["power_count"] = stats.powerDataCount;
@@ -608,23 +659,20 @@ void publishMqtt() {
   serializeJson(doc, payload);
   mqtt.enqueue("stats", payload);
 
-  uint32_t nowMs = millis();
-  for (auto const &[id, gw] : parser.getGateways()) {
-    if (!gw.seen && gw.polls == 0)
-      continue;
-    if (discovery) {
-      bool hasBarcode = parser.getGatewayBarcodes().count(id) > 0;
-      auto known = discoveredTaps.find(id);
+  for (const auto &tap : taps) {
+    if (cfg.discovery) {
+      bool hasBarcode = !tap.barcode.empty();
+      auto known = discoveredTaps.find(tap.id);
       if (known == discoveredTaps.end() || (!known->second && hasBarcode)) {
-        if (publishHaTapDiscovery(id))
-          discoveredTaps[id] = hasBarcode;
+        if (publishHaTapDiscovery(tap.id, tap.barcode, cfg))
+          discoveredTaps[tap.id] = hasBarcode;
       }
     }
     JsonDocument tapDoc;
-    tapToJson(tapDoc.to<JsonObject>(), gw, nowMs);
+    tapToJson(tapDoc.to<JsonObject>(), tap.gw, now, &tap.barcode);
     String tapPayload;
     serializeJson(tapDoc, tapPayload);
-    mqtt.enqueue("tap/" + tapHexId(id), tapPayload);
+    mqtt.enqueue("tap/" + tapHexId(tap.id), tapPayload);
   }
 }
 
@@ -738,9 +786,13 @@ void setup() {
       // TAPs (gateways) as seen on the bus
       JsonArray taps = root["taps"].to<JsonArray>();
       uint64_t nowMs = static_cast<uint64_t>(esp_timer_get_time() / 1000);
+      const auto &barcodes = parser.getGatewayBarcodes();
       for (auto const &[id, gw] : parser.getGateways()) {
-        if (gw.seen || gw.polls > 0)
-          tapToJson(taps.add<JsonObject>(), gw, nowMs);
+        if (gw.seen || gw.polls > 0) {
+          auto bc = barcodes.find(id);
+          tapToJson(taps.add<JsonObject>(), gw, nowMs,
+                    bc != barcodes.end() ? &bc->second : nullptr);
+        }
       }
 
       // Discovery Data (Persistent Map)
