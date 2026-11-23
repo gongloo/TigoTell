@@ -338,10 +338,11 @@ size_t blobEntries(size_t len) {
 }
 
 size_t storedLayoutLength() {
+  Preferences prefs;
   size_t len = 0;
-  if (preferences.begin("tigolayout", true)) {
-    len = preferences.getBytesLength("layout");
-    preferences.end();
+  if (prefs.begin("tigolayout", true)) {
+    len = prefs.getBytesLength("layout");
+    prefs.end();
   }
   return len;
 }
@@ -362,17 +363,18 @@ size_t layoutCapacity() {
 }
 
 String loadLayout() {
+  Preferences prefs;
   String layout;
-  if (preferences.begin("tigolayout", true)) {
-    size_t len = preferences.getBytesLength("layout");
+  if (prefs.begin("tigolayout", true)) {
+    size_t len = prefs.getBytesLength("layout");
     if (len > 0) {
       std::unique_ptr<char[]> buf(new (std::nothrow) char[len + 1]);
-      if (buf && preferences.getBytes("layout", buf.get(), len) == len) {
+      if (buf && prefs.getBytes("layout", buf.get(), len) == len) {
         buf[len] = '\0';
         layout = buf.get();
       }
     }
-    preferences.end();
+    prefs.end();
   }
   return layout.length() > 0 ? layout : String(kDefaultLayout);
 }
@@ -380,11 +382,12 @@ String loadLayout() {
 // Remove first: NVS would otherwise need room for old and new blob at once.
 // Only called after layoutCapacity() confirmed the new blob fits.
 bool saveLayout(const uint8_t *data, size_t len) {
-  if (!preferences.begin("tigolayout", false))
+  Preferences prefs;
+  if (!prefs.begin("tigolayout", false))
     return false;
-  preferences.remove("layout");
-  bool ok = preferences.putBytes("layout", data, len) == len;
-  preferences.end();
+  prefs.remove("layout");
+  bool ok = prefs.putBytes("layout", data, len) == len;
+  prefs.end();
   return ok;
 }
 
