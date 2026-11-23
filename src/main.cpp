@@ -463,7 +463,7 @@ void setup() {
     // Explain instead of answering "Not found".
     server.on("/update", HTTP_GET, [](AsyncWebServerRequest *request) {
       request->send(
-          200, "text/html",
+          503, "text/html",
           "<!DOCTYPE html><html lang=\"en\"><head><meta charset=\"UTF-8\">"
           "<meta name=\"viewport\" content=\"width=device-width, "
           "initial-scale=1.0\"><title>Firmware update disabled</title>"
