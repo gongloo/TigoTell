@@ -109,9 +109,14 @@ void MqttPublisher::run() {
     bool isUp = client.connected();
     if (connected && !isUp)
       taskLog.println("MQTT: connection lost.");
-    connected = isUp;
+    bool pendingNow = false;
+    {
+      std::lock_guard<std::mutex> lock(mutex);
+      pendingNow = hasPending;
+      connected = isUp && !pendingNow;
+    }
 
-    if (isUp) {
+    if (isUp && !pendingNow) {
       client.loop();
       for (;;) {
         Message msg;
@@ -127,7 +132,7 @@ void MqttPublisher::run() {
                            msg.retain))
           published++;
       }
-    } else {
+    } else if (!isUp) {
       std::lock_guard<std::mutex> lock(mutex);
       queue.clear();
       queuedBytes = 0;
