@@ -53,8 +53,10 @@ public:
   uint16_t address;
   uint16_t pv_node_id;
   uint32_t barcode_fragment; // 3 bytes usually
+  std::string long_address;  // 16 uppercase hex digits (8 bytes)
 
-  TigoAnnounceFrame(uint16_t addr, uint16_t id, uint32_t barcode);
+  TigoAnnounceFrame(uint16_t addr, uint16_t id, uint32_t barcode,
+                    const std::string &longAddr = "");
 
   TigoFrameType getType() const override { return TigoFrameType::Announce; }
   std::string

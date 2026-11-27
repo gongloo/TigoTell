@@ -943,6 +943,8 @@ void loop() {
         }
 
         // Update persistent node table
+        bool changed = false;
+        std::vector<uint8_t> blob;
         {
           std::lock_guard<std::mutex> lock(dataMutex);
           NodeInfo &info = persistentNodeTable[announceFrame->pv_node_id];
@@ -950,7 +952,20 @@ void loop() {
           info.pv_node_id = announceFrame->pv_node_id;
           info.barcode_fragment = announceFrame->barcode_fragment;
           info.last_seen = esp_timer_get_time() / 1000;
+          if (!announceFrame->long_address.empty() &&
+              info.long_address != announceFrame->long_address) {
+            std::string bc = tigoBarcodeFromHex(announceFrame->long_address);
+            if (!bc.empty()) {
+              info.long_address = announceFrame->long_address;
+              info.barcode = bc;
+              changed = true;
+            }
+          }
+          if (changed)
+            blob = nodeMapBlob();
         }
+        if (changed)
+          saveNodeMap(blob);
       }
       break;
     }

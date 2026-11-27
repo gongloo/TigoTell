@@ -45,8 +45,10 @@ std::string TigoPowerFrame::toString() const {
 // --- TigoAnnounceFrame Implementation ---
 
 TigoAnnounceFrame::TigoAnnounceFrame(uint16_t addr, uint16_t id,
-                                     uint32_t barcode)
-    : address(addr), pv_node_id(id), barcode_fragment(barcode) {}
+                                     uint32_t barcode,
+                                     const std::string &longAddr)
+    : address(addr), pv_node_id(id), barcode_fragment(barcode),
+      long_address(longAddr) {}
 
 std::string TigoAnnounceFrame::toInfluxLineProtocol(
     const std::string &measurementName) const {
@@ -590,16 +592,19 @@ void TigoParser::parseTLVPayload(const std::vector<uint8_t> &payload,
       // 0: Type (0x09)
       // 1-2: Node ID
       // 3-4: Short Address
-      // 7...: Payload (TopologyReport)
+      // 7...: Payload (TopologyReport), with 8-byte long address at +15..+22
 
-      if (pos + 23 <= payload.size()) {
+      if (len >= 16 && pos + 23 <= payload.size()) {
         uint16_t node_id = (payload[pos + 1] << 8) | payload[pos + 2];
         uint16_t addr = (payload[pos + 3] << 8) | payload[pos + 4];
         uint32_t barcode = (payload[pos + 20] << 16) |
                            (payload[pos + 21] << 8) | payload[pos + 22];
+        char hex[17];
+        for (int j = 0; j < 8; j++)
+          snprintf(hex + j * 2, 3, "%02X", payload[pos + 15 + j]);
 
         frameQueue.push_back(std::unique_ptr<TigoFrame>(
-            new TigoAnnounceFrame(addr, node_id, barcode)));
+            new TigoAnnounceFrame(addr, node_id, barcode, hex)));
       }
     }
 
@@ -619,7 +624,6 @@ void TigoParser::parseManagementPayload(const std::vector<uint8_t> &payload) {
   uint8_t type = payload[7];
 
   if (type == 0x27) { // Node Table / Command Response
-    stats.nodeTableCount++;
     // Reference `process27frame`
     // Data starts at offset 9 (relative to payload start)
     // Num Entries at offset 11 (2 bytes)
@@ -657,6 +661,7 @@ void TigoParser::parseManagementPayload(const std::vector<uint8_t> &payload) {
     }
 
     if (!entries.empty()) {
+      stats.nodeTableCount++;
       frameQueue.push_back(
           std::unique_ptr<TigoFrame>(new TigoNodeTableFrame(entries)));
     }
