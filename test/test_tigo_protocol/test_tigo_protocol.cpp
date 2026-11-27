@@ -658,7 +658,7 @@ TEST(TigoParserTest, TruncatedAndMalformedPayloadsDoNotCrashOrReadOOB) {
       buildWireFrame({0x00, 0x01, 0x0B, 0x10, 0x00, 0x00, 0x00, 0x27, 0x00, 0x01});
   parser.pushBytes(wireShortNodeTable.data(), wireShortNodeTable.size());
   EXPECT_FALSE(parser.hasFrames());
-  EXPECT_EQ(parser.getStatistics().nodeTableCount, 1u);
+  EXPECT_EQ(parser.getStatistics().nodeTableCount, 0u);
 
   // 9. NodeTable claiming numEntries = 5 but only having 1 full entry + 4
   // trailing bytes
@@ -988,6 +988,42 @@ TEST(TigoParserTest, EnumerationIdentifyDoesNotCreatePhantomGateway) {
   ASSERT_EQ(barcodes.count(0x1201), 1u);
   EXPECT_FALSE(barcodes.at(0x1201).empty());
   EXPECT_EQ(barcodes.at(0x1201), barcodes.at(0x1202));
+}
+
+TEST(TigoParserTest, AnnounceExtractsLongAddressAndSkipsEmpty0x27Count) {
+  TigoParser parser;
+
+  // Empty 0-entry 0x27 response should not increment nodeTableCount
+  auto wireZeroEntries = buildWireFrame(buildNodeTablePayload(0x10, {}));
+  parser.pushBytes(wireZeroEntries.data(), wireZeroEntries.size());
+  EXPECT_FALSE(parser.hasFrames());
+  EXPECT_EQ(parser.getStatistics().nodeTableCount, 0u);
+
+  // Non-empty 0x27 response increments nodeTableCount
+  NodeTableInput entry = {{0x04, 0xC0, 0x5B, 0x40, 0x00, 0x9A, 0x57, 0xBB}, 2};
+  auto wireOneEntry = buildWireFrame(buildNodeTablePayload(0x10, {entry}));
+  parser.pushBytes(wireOneEntry.data(), wireOneEntry.size());
+  ASSERT_TRUE(parser.hasFrames());
+  parser.popFrame();
+  EXPECT_EQ(parser.getStatistics().nodeTableCount, 1u);
+
+  // Announce (0x09) carries the full 8-byte long address at pkt[15..22]
+  auto pkt = buildAnnouncePacket(/*nodeId=*/0x0007, /*shortAddr=*/0x003F,
+                                 /*barcodeFrag24=*/0x9A57BB);
+  const uint8_t longAddr[8] = {0x04, 0xC0, 0x5B, 0x40, 0x00, 0x9A, 0x57, 0xBB};
+  std::copy(longAddr, longAddr + 8, pkt.begin() + 15);
+  auto wireAnnounce = buildWireFrame(buildTLVFramePayload(0x001F, pkt));
+  parser.pushBytes(wireAnnounce.data(), wireAnnounce.size());
+
+  ASSERT_TRUE(parser.hasFrames());
+  auto f = parser.popFrame();
+  auto *ann = dynamic_cast<TigoAnnounceFrame *>(f.get());
+  ASSERT_NE(ann, nullptr);
+  EXPECT_EQ(ann->pv_node_id, 0x0007);
+  EXPECT_EQ(ann->address, 0x003F);
+  EXPECT_EQ(ann->barcode_fragment, 0x9A57BBu);
+  EXPECT_EQ(ann->long_address, "04C05B40009A57BB");
+  EXPECT_EQ(tigoBarcodeFromHex(ann->long_address), tigoBarcode(longAddr));
 }
 
 int main(int argc, char **argv) {
