@@ -952,6 +952,44 @@ TEST(TigoParserTest, GatewayAndNodeTimestampsPreserve64BitValuesPast49Days) {
   EXPECT_EQ(gwIt->second.nodes.at(0x0042).lastMs, kLater64BitMs);
 }
 
+TEST(TigoParserTest, EnumerationIdentifyDoesNotCreatePhantomGateway) {
+  TigoParser parser;
+
+  auto push = [&](const std::vector<uint8_t> &payload) {
+    auto wire = buildWireFrame(payload);
+    parser.pushBytes(wire.data(), wire.size());
+    while (parser.hasFrames()) {
+      parser.popFrame();
+    }
+  };
+
+  // Normal receive request/response for active TAP 0x1201
+  push({0x12, 0x01, 0x01, 0x48, 0x00, 0x01, 0x18, 0x83, 0x04});
+  push({0x92, 0x01, 0x01, 0x49, 0x00, 0xFF, 0x01, 0x21, 0x1B});
+
+  // Enumeration assigns temporary ID 0x1202 and exchanges 0x003A / 0x003B
+  push({0x12, 0x01, 0x00, 0x3C, 0x37, 0x24, 0x92, 0x66, 0x04, 0xC0, 0x5B, 0x30,
+        0x00, 0x02, 0xBE, 0x16, 0x12, 0x02});
+  push({0x12, 0x02, 0x00, 0x3A});
+  push({0x92, 0x02, 0x00, 0x3B, 0x04, 0xC0, 0x5B, 0x30, 0x00, 0x02, 0xBE, 0x16,
+        0x12, 0x02});
+
+  // CCA reverts to 0x1201 and identifies it
+  push({0x12, 0x01, 0x00, 0x3A});
+  push({0x92, 0x01, 0x00, 0x3B, 0x04, 0xC0, 0x5B, 0x30, 0x00, 0x02, 0xBE, 0x16,
+        0x12, 0x01});
+
+  const auto &gateways = parser.getGateways();
+  EXPECT_EQ(gateways.size(), 1u);
+  EXPECT_EQ(gateways.count(0x1201), 1u);
+  EXPECT_EQ(gateways.count(0x1202), 0u);
+
+  const auto &barcodes = parser.getGatewayBarcodes();
+  ASSERT_EQ(barcodes.count(0x1201), 1u);
+  EXPECT_FALSE(barcodes.at(0x1201).empty());
+  EXPECT_EQ(barcodes.at(0x1201), barcodes.at(0x1202));
+}
+
 int main(int argc, char **argv) {
   ::testing::InitGoogleTest(&argc, argv);
   return RUN_ALL_TESTS();

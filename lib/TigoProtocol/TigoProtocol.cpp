@@ -333,12 +333,19 @@ void TigoParser::trackGateway(const std::vector<uint8_t> &payload) {
     return;
   }
 
-  // Only traffic at a gateway's regular ID; enumeration uses temporary IDs.
+  // Identify request/response (also sent to temporary IDs during enumeration):
+  // record the barcode without creating a TAP entry in gateways.
+  if (type == 0x003A || type == 0x003B) {
+    if (type == 0x003B && fromGateway && id != 0 && payload.size() >= 12)
+      gatewayBarcodes[id] = tigoBarcode(&payload[4]);
+    return;
+  }
+
+  // Only operational traffic at a gateway's regular ID; enumeration uses temporary IDs.
   switch (type) {
   case 0x0148: case 0x0149: // receive request/response
   case 0x0B0F: case 0x0B10: // command request/response
   case 0x0B00: case 0x0B01: // ping request/response
-  case 0x003A: case 0x003B: // identify request/response
   case 0x000A: case 0x000B: // version request/response
     break;
   default:
@@ -383,10 +390,6 @@ void TigoParser::trackGateway(const std::vector<uint8_t> &payload) {
       gw.radioChannel = payload[10];
       gw.panId = (payload[11] << 8) | payload[12];
     }
-    break;
-  case 0x003B: // identify response: long address, gateway ID
-    if (payload.size() >= 12)
-      gatewayBarcodes[id] = tigoBarcode(&payload[4]);
     break;
   case 0x000B: { // version response: text with CR separators
     std::string v;
