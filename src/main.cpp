@@ -323,6 +323,90 @@ std::map<uint16_t, unsigned long> lastUpdateTimesAnnounce;
 std::map<uint16_t, PowerStatsAccumulator> nodeAccumulators;
 bool isElegantOtaStarted = false;
 
+// Layout for the designer page. Stored in NVS (not LittleFS), because a
+// filesystem update overwrites LittleFS completely. NVS is small (20 KB) and
+// shared with WiFi, PHY calibration and settings, so the layout may only use
+// what is left after keeping a reserve for those.
+constexpr size_t kLayoutMaxBytes = 8192;
+constexpr size_t kNvsReserveEntries = 64; // ~2 KB kept free for others
+const char *kDefaultLayout = "{\"v\":1,\"el\":[]}";
+
+// NVS entries a blob occupies: 32-byte data entries, a header per chunk (one
+// chunk per 4 KB page) and an index entry.
+size_t blobEntries(size_t len) {
+  return len == 0 ? 0 : (len + 31) / 32 + (len + 3999) / 4000 + 2;
+}
+
+size_t storedLayoutLength() {
+  Preferences prefs;
+  size_t len = 0;
+  if (prefs.begin("tigolayout", true)) {
+    len = prefs.getBytesLength("layout");
+    prefs.end();
+  }
+  return len;
+}
+
+// Largest layout that can be stored right now.
+size_t layoutCapacity() {
+  nvs_stats_t stats;
+  if (nvs_get_stats(NULL, &stats) != ESP_OK)
+    return 0;
+  long entries = static_cast<long>(stats.available_entries) +
+                 static_cast<long>(blobEntries(storedLayoutLength())) -
+                 static_cast<long>(kNvsReserveEntries);
+  // Overhead of a blob that spans up to three pages.
+  long bytes = (entries - 5) * 32;
+  if (bytes <= 0)
+    return 0;
+  return std::min(static_cast<size_t>(bytes), kLayoutMaxBytes);
+}
+
+String loadLayout() {
+  Preferences prefs;
+  String layout;
+  if (prefs.begin("tigolayout", true)) {
+    size_t len = prefs.getBytesLength("layout");
+    if (len > 0) {
+      std::unique_ptr<char[]> buf(new (std::nothrow) char[len + 1]);
+      if (buf && prefs.getBytes("layout", buf.get(), len) == len) {
+        buf[len] = '\0';
+        layout = buf.get();
+      }
+    }
+    prefs.end();
+  }
+  return layout.length() > 0 ? layout : String(kDefaultLayout);
+}
+
+// Remove first: NVS would otherwise need room for old and new blob at once.
+// Back up any existing layout in RAM first so a failed write can restore it.
+// Only called after layoutCapacity() confirmed the new blob fits.
+bool saveLayout(const uint8_t *data, size_t len) {
+  Preferences prefs;
+  if (!prefs.begin("tigolayout", false))
+    return false;
+  size_t oldLen = prefs.getBytesLength("layout");
+  std::unique_ptr<uint8_t[]> backup;
+  if (oldLen > 0 && oldLen <= kLayoutMaxBytes) {
+    backup.reset(new (std::nothrow) uint8_t[oldLen]);
+    if (!backup || prefs.getBytes("layout", backup.get(), oldLen) != oldLen) {
+      prefs.end();
+      return false;
+    }
+  }
+  prefs.remove("layout");
+  bool ok = prefs.putBytes("layout", data, len) == len;
+  if (!ok && backup) {
+    bool restored = prefs.putBytes("layout", backup.get(), oldLen) == oldLen;
+    taskLog.printf("Layout: save failed; backup restore %s (%u bytes)\n",
+                   restored ? "succeeded" : "FAILED",
+                   static_cast<unsigned>(oldLen));
+  }
+  prefs.end();
+  return ok;
+}
+
 void publishMqtt() {
   MqttPublishSnapshot snap;
   {
@@ -365,6 +449,97 @@ void publishMqtt() {
   snap.cfg.localIp = WiFi.localIP().toString().c_str();
 
   tigoMqtt.publish(snap, mqtt.sink());
+}
+
+struct RequestBodyUpload {
+  std::string body;
+  int errorStatus = 0; // 0 = ok, else 400 / 413
+  size_t rejectedBytes = 0;
+};
+
+// Accumulate bounded raw request body chunks onto request->_tempObject.
+void accumulateRequestBody(AsyncWebServerRequest *request, uint8_t *data,
+                           size_t len, size_t index, size_t total,
+                           size_t maxBytes) {
+  if (index == 0 && !request->_tempObject) {
+    auto *upload = new (std::nothrow) RequestBodyUpload{};
+    if (!upload)
+      return;
+    if (total > maxBytes) {
+      upload->errorStatus = 413;
+      upload->rejectedBytes = total;
+    } else if (total > 0) {
+      upload->body.reserve(total);
+    }
+    request->_tempObject = upload;
+    request->onDisconnect([request]() {
+      delete static_cast<RequestBodyUpload *>(request->_tempObject);
+      request->_tempObject = nullptr;
+    });
+  }
+
+  auto *upload = static_cast<RequestBodyUpload *>(request->_tempObject);
+  if (!upload || upload->errorStatus != 0)
+    return;
+
+  if (index != upload->body.size() || len > maxBytes - upload->body.size() ||
+      (total > 0 && (len > total || index > total - len))) {
+    if (len > maxBytes - upload->body.size()) {
+      upload->errorStatus = 413;
+      upload->rejectedBytes =
+          total > 0 ? total
+                    : upload->body.size() + std::min(len, maxBytes + 1);
+    } else {
+      upload->errorStatus = 400;
+    }
+    upload->body.clear();
+    return;
+  }
+  if (len > 0)
+    upload->body.append(reinterpret_cast<const char *>(data), len);
+}
+
+// Take ownership of the accumulated upload and validate completeness.
+// Returns nullptr after sending an error response (invoking onTooLarge on 413).
+template <typename OnTooLarge>
+std::unique_ptr<RequestBodyUpload>
+takeUpload(AsyncWebServerRequest *request, OnTooLarge &&onTooLarge) {
+  std::unique_ptr<RequestBodyUpload> upload(
+      static_cast<RequestBodyUpload *>(request->_tempObject));
+  request->_tempObject = nullptr;
+
+  if (!upload) {
+    bool nonJson = request->multipart() ||
+                   request->contentType().startsWith(
+                       "application/x-www-form-urlencoded") ||
+                   request->params() > 0;
+    if (nonJson) {
+      request->send(400, "text/plain", "Expected application/json body");
+    } else if (request->contentLength() == 0) {
+      request->send(400, "text/plain", "Empty body");
+    } else {
+      request->send(503, "text/plain", "Out of memory");
+    }
+    return nullptr;
+  }
+  if (upload->errorStatus == 413) {
+    onTooLarge(upload->rejectedBytes);
+    return nullptr;
+  }
+  if (upload->errorStatus != 0) {
+    request->send(400, "text/plain", "Invalid body size");
+    return nullptr;
+  }
+  if (upload->body.empty()) {
+    request->send(400, "text/plain", "Empty body");
+    return nullptr;
+  }
+  if (request->contentLength() > 0 &&
+      upload->body.size() != request->contentLength()) {
+    request->send(400, "text/plain", "Incomplete body");
+    return nullptr;
+  }
+  return upload;
 }
 
 void setup() {
@@ -547,49 +722,14 @@ void setup() {
 
   // Config POST endpoint
   constexpr size_t kConfigMaxBytes = 4096;
-  struct ConfigUpload {
-    std::string body;
-    int errorStatus = 0; // 0 = ok, else 400 / 413
-  };
   server.on(
       "/api/config", HTTP_POST,
       [](AsyncWebServerRequest *request) {
-        std::unique_ptr<ConfigUpload> upload(
-            static_cast<ConfigUpload *>(request->_tempObject));
-        request->_tempObject = nullptr;
-
-        if (!upload) {
-          bool nonJson = request->multipart() ||
-                         request->contentType().startsWith(
-                             "application/x-www-form-urlencoded") ||
-                         request->params() > 0;
-          if (nonJson) {
-            request->send(400, "text/plain",
-                          "Expected application/json body");
-          } else if (request->contentLength() == 0) {
-            request->send(400, "text/plain", "Empty body");
-          } else {
-            request->send(503, "text/plain", "Out of memory");
-          }
-          return;
-        }
-        if (upload->errorStatus == 413) {
+        auto upload = takeUpload(request, [request](size_t) {
           request->send(413, "text/plain", "Payload too large");
+        });
+        if (!upload)
           return;
-        }
-        if (upload->errorStatus != 0) {
-          request->send(400, "text/plain", "Invalid body size");
-          return;
-        }
-        if (upload->body.empty()) {
-          request->send(400, "text/plain", "Empty body");
-          return;
-        }
-        if (request->contentLength() > 0 &&
-            upload->body.size() != request->contentLength()) {
-          request->send(400, "text/plain", "Incomplete body");
-          return;
-        }
 
         JsonDocument doc;
         DeserializationError error =
@@ -683,36 +823,84 @@ void setup() {
       NULL,
       [](AsyncWebServerRequest *request, uint8_t *data, size_t len,
          size_t index, size_t total) {
-        if (index == 0 && !request->_tempObject) {
-          auto *upload = new (std::nothrow) ConfigUpload{};
-          if (!upload)
+        accumulateRequestBody(request, data, len, index, total,
+                              kConfigMaxBytes);
+      });
+
+  // Layout endpoints (designer page)
+  server.on("/api/layout", HTTP_GET, [](AsyncWebServerRequest *request) {
+    AsyncWebServerResponse *response =
+        request->beginResponse(200, "application/json", loadLayout());
+    response->addHeader("X-Layout-Max", String(layoutCapacity()));
+    response->addHeader("Cache-Control", "no-store");
+    request->send(response);
+  });
+
+  server.on(
+      "/api/layout", HTTP_POST,
+      [](AsyncWebServerRequest *request) {
+        auto sendTooLarge = [request](size_t bytes, size_t capacity) {
+          taskLog.printf("Layout: %u bytes rejected, room for %u bytes\n",
+                         static_cast<unsigned>(bytes),
+                         static_cast<unsigned>(capacity));
+          AsyncWebServerResponse *response = request->beginResponse(
+              413, "text/plain",
+              "Layout too large: the device has room for " + String(capacity) +
+                  " bytes");
+          response->addHeader("X-Layout-Max", String(capacity));
+          request->send(response);
+        };
+        auto upload = takeUpload(request, [&sendTooLarge](size_t bytes) {
+          sendTooLarge(bytes, layoutCapacity());
+        });
+        if (!upload)
+          return;
+
+        size_t capacity = layoutCapacity();
+        if (upload->body.size() > capacity) {
+          sendTooLarge(upload->body.size(), capacity);
+          return;
+        }
+
+        {
+          JsonDocument doc;
+          DeserializationError err =
+              deserializeJson(doc, upload->body.data(), upload->body.size());
+          if (err == DeserializationError::NoMemory) {
+            request->send(503, "text/plain", "Out of memory");
             return;
-          if (total > kConfigMaxBytes) {
-            upload->errorStatus = 413;
-          } else if (total > 0) {
-            upload->body.reserve(total);
           }
-          request->_tempObject = upload;
-          request->onDisconnect([request]() {
-            delete static_cast<ConfigUpload *>(request->_tempObject);
-            request->_tempObject = nullptr;
-          });
+          if (err || !doc.is<JsonObject>() || !doc["el"].is<JsonArray>()) {
+            request->send(400, "text/plain", "Invalid layout JSON");
+            return;
+          }
         }
 
-        auto *upload = static_cast<ConfigUpload *>(request->_tempObject);
-        if (!upload || upload->errorStatus != 0)
-          return;
-
-        if (index != upload->body.size() ||
-            len > kConfigMaxBytes - upload->body.size() ||
-            (total > 0 && (len > total || index > total - len))) {
-          upload->errorStatus =
-              (len > kConfigMaxBytes - upload->body.size()) ? 413 : 400;
-          upload->body.clear();
+        size_t len = upload->body.size();
+        unsigned long started = millis();
+        bool ok = saveLayout(
+            reinterpret_cast<const uint8_t *>(upload->body.data()), len);
+        upload.reset();
+        nvs_stats_t stats = {};
+        nvs_get_stats(NULL, &stats);
+        taskLog.printf("Layout: %s %u bytes in %lu ms, NVS entries left %u, "
+                       "free heap %u\n",
+                       ok ? "saved" : "FAILED to save",
+                       static_cast<unsigned>(len), millis() - started,
+                       static_cast<unsigned>(stats.available_entries),
+                       ESP.getFreeHeap());
+        if (!ok) {
+          request->send(507, "text/plain",
+                        "The device could not store the layout");
           return;
         }
-        if (len > 0)
-          upload->body.append(reinterpret_cast<const char *>(data), len);
+        request->send(200, "text/plain", "OK");
+      },
+      NULL,
+      [](AsyncWebServerRequest *request, uint8_t *data, size_t len,
+         size_t index, size_t total) {
+        accumulateRequestBody(request, data, len, index, total,
+                              kLayoutMaxBytes);
       });
 
   // Reboot endpoint
